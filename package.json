@@ -1,0 +1,33 @@
+{
+  "name": "pi-claude-powerline",
+  "version": "0.1.0",
+  "description": "Pi extension that adds Claude Powerline-inspired themes",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "theme",
+    "claude-powerline"
+  ],
+  "license": "MIT",
+  "files": [
+    "index.ts",
+    "themes/*.json",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}
