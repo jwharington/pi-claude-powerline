@@ -7,6 +7,7 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 const WIDGET_KEY = "claude-powerline-bar";
 
+
 type ThemeName = "dark" | "light" | "nord" | "tokyo-night" | "rose-pine" | "gruvbox";
 type SegmentKey =
   | "spinner"
@@ -31,7 +32,7 @@ type PersistedConfig = {
 };
 
 const DEFAULT_SEGMENT_VISIBILITY: SegmentVisibility = {
-  spinner: true,
+  spinner: false,
   directory: true,
   git: true,
   model: true,
@@ -231,8 +232,19 @@ function getUsageStats(ctx: any): {
   return { input, output, cacheRead, cacheWrite, sessionTokens, sessionCost, todayCost, weeklyCost };
 }
 
+type RenderSegment = { id: SegmentKey; text: string; color: SegmentColor };
+
+function shouldRenderSeparator(
+  current: RenderSegment,
+  next: RenderSegment,
+  options?: { omitSeparators?: string[] },
+): boolean {
+  const pair = `${current.id}:${next.id}`;
+  return !(options?.omitSeparators?.includes(pair));
+}
+
 function renderPowerlineRow(
-  segments: Array<{ text: string; color: SegmentColor }>,
+  segments: RenderSegment[],
   width: number,
   options?: {
     fillLast?: boolean;
@@ -240,6 +252,7 @@ function renderPowerlineRow(
     fillLastUnusedBg?: string;
     omitLastGlyph?: boolean;
     rightAlignLastText?: boolean;
+    omitSeparators?: string[];
   },
 ): string {
   if (segments.length === 0) return "";
@@ -253,7 +266,9 @@ function renderPowerlineRow(
       out += `${fg(current.color.fg)}${bg(current.color.bg)} ${current.text} ${RESET}`;
 
       if (next) {
-        out += `${fg(current.color.bg)}${bg(next.color.bg)}${POWERLINE_GLYPH}${RESET}`;
+        if (shouldRenderSeparator(current, next, options)) {
+          out += `${fg(current.color.bg)}${bg(next.color.bg)}${POWERLINE_GLYPH}${RESET}`;
+        }
       } else {
         out += `${fg(current.color.bg)}${POWERLINE_GLYPH}${RESET}`;
       }
@@ -280,8 +295,10 @@ function renderPowerlineRow(
     out += `${fg(current.color.fg)}${bg(current.color.bg)}${content}${RESET}`;
     usedWidth += visibleWidth(content);
 
-    out += `${fg(current.color.bg)}${bg(next.color.bg)}${POWERLINE_GLYPH}${RESET}`;
-    usedWidth += visibleWidth(POWERLINE_GLYPH);
+    if (shouldRenderSeparator(current, next, options)) {
+      out += `${fg(current.color.bg)}${bg(next.color.bg)}${POWERLINE_GLYPH}${RESET}`;
+      usedWidth += visibleWidth(POWERLINE_GLYPH);
+    }
   }
 
   const lastTextWidth = visibleWidth(last.text);
@@ -380,6 +397,13 @@ function mutedContextFillColor(percent: number | undefined, fallback: SegmentCol
   }
 
   return { bg: "#2f4f46", fg: "#d7efe8" }; // muted healthy
+}
+
+function sanitizeStatusText(text: string): string {
+  return text
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/ +/g, " ")
+    .trim();
 }
 
 
@@ -517,27 +541,33 @@ export default function (pi: ExtensionAPI) {
     if (!enabled) {
       ctx.ui.setWidget(WIDGET_KEY, undefined);
       ctx.ui.setFooter(undefined);
-      ctx.ui.setWorkingIndicator();
-      ctx.ui.setWorkingMessage();
       ctx.ui.setEditorComponent(undefined);
       return;
     }
 
-    // Hide the built-in working status line; powerline shows its own spinner segment.
-    ctx.ui.setWorkingIndicator({ frames: [] });
-    ctx.ui.setWorkingMessage("");
-
-    // Keep default editor so the standard line above prompt remains visible.
+    // Keep default editor behavior.
     ctx.ui.setEditorComponent(undefined);
 
-    // Hide the default footer to avoid duplicate stats/model lines.
-    ctx.ui.setFooter(() => ({
+    // Keep only non-redundant footer info (extension status texts).
+    ctx.ui.setFooter((_tui, uiTheme, footerData) => ({
       invalidate() {},
-      render() {
-        return [];
+      render(width: number): string[] {
+        const statuses = Array.from(footerData.getExtensionStatuses().entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([, value]) => sanitizeStatusText(value))
+          .filter((value) => value.length > 0);
+
+        if (statuses.length === 0) return [];
+
+        const raw = statuses.join(" ");
+        const truncated = truncateToWidth(raw, width, "...");
+        const pad = Math.max(0, width - visibleWidth(truncated));
+        const line = `${" ".repeat(pad)}${truncated}`;
+        return [uiTheme.fg("dim", line)];
       },
     }));
 
+    // Render powerline above the editor for stable layout behavior.
     ctx.ui.setWidget(
       WIDGET_KEY,
       (tui) => {
@@ -562,7 +592,6 @@ export default function (pi: ExtensionAPI) {
             const contextText = typeof contextPercent === "number"
               ? `◔ ${contextPercent.toFixed(1)}%/${fmtTokens(contextWindow)}`
               : `◔ ?/${fmtTokens(contextWindow)}`;
-            const spinner = isStreaming ? SPINNER_FRAMES[spinnerIndex] ?? "*" : "✓";
             const envLabel = parseEnvLabel();
             const tmuxLabel = parseTmuxLabel();
 
@@ -571,27 +600,27 @@ export default function (pi: ExtensionAPI) {
               ? `✱ (${provider}) ${model} • ${thinkingLevel}`
               : `✱ ${model} • ${thinkingLevel}`;
 
-            const segments: Array<{ text: string; color: SegmentColor }> = [];
+            const segments: RenderSegment[] = [];
 
-            if (segmentVisibility.spinner) segments.push({ text: spinner, color: currentTheme.spinner });
-            if (segmentVisibility.directory) segments.push({ text: dirText, color: currentTheme.directory });
-            if (segmentVisibility.git) segments.push({ text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
-            if (segmentVisibility.model) segments.push({ text: modelText, color: currentTheme.model });
+            if (segmentVisibility.directory) segments.push({ id: "directory", text: dirText, color: currentTheme.directory });
+            if (segmentVisibility.git) segments.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
+            if (segmentVisibility.model) segments.push({ id: "model", text: modelText, color: currentTheme.model });
             if (segmentVisibility.session) {
               segments.push({
+                id: "session",
                 text: `§ ↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)} R${fmtTokens(usage.cacheRead)} W${fmtTokens(usage.cacheWrite)} ${fmtCost(usage.sessionCost)}`,
                 color: currentTheme.session,
               });
             }
-            if (segmentVisibility.today) segments.push({ text: `☀ ${fmtCost(usage.todayCost)}`, color: currentTheme.today });
-            if (segmentVisibility.weekly) segments.push({ text: `◷ ${fmtCost(usage.weeklyCost)}`, color: currentTheme.weekly });
-            if (segmentVisibility.env && envLabel) segments.push({ text: `⚑ ${envLabel}`, color: currentTheme.env });
-            if (segmentVisibility.tmux && tmuxLabel) segments.push({ text: `⌂ ${tmuxLabel}`, color: currentTheme.tmux });
+            if (segmentVisibility.today) segments.push({ id: "today", text: `☀ ${fmtCost(usage.todayCost)}`, color: currentTheme.today });
+            if (segmentVisibility.weekly) segments.push({ id: "weekly", text: `◷ ${fmtCost(usage.weeklyCost)}`, color: currentTheme.weekly });
+            if (segmentVisibility.env && envLabel) segments.push({ id: "env", text: `⚑ ${envLabel}`, color: currentTheme.env });
+            if (segmentVisibility.tmux && tmuxLabel) segments.push({ id: "tmux", text: `⌂ ${tmuxLabel}`, color: currentTheme.tmux });
 
             let contextRatio: number | undefined;
             if (segmentVisibility.context) {
               const contextColor = mutedContextFillColor(contextPercent, currentTheme.context);
-              segments.push({ text: contextText, color: contextColor });
+              segments.push({ id: "context", text: contextText, color: contextColor });
               contextRatio = typeof contextPercent === "number" ? contextPercent / 100 : 0;
             }
 
@@ -601,11 +630,12 @@ export default function (pi: ExtensionAPI) {
               fillLastUnusedBg: "#1f2937",
               omitLastGlyph: segmentVisibility.context,
               rightAlignLastText: segmentVisibility.context,
+              omitSeparators: ["git:model"],
             })];
           },
         };
       },
-      { placement: "belowEditor" },
+      { placement: "aboveEditor" },
     );
   };
 
@@ -629,6 +659,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
 
     ctx.ui.setFooter(undefined);
+    ctx.ui.setWidget(WIDGET_KEY, undefined);
     applyBar(ctx);
     await refreshBranch();
   });
@@ -637,8 +668,8 @@ export default function (pi: ExtensionAPI) {
     stopSpinner();
     requestRender = null;
     if (latestCtx?.hasUI) {
-      latestCtx.ui.setWorkingIndicator();
-      latestCtx.ui.setWorkingMessage();
+      latestCtx.ui.setWidget(WIDGET_KEY, undefined);
+      latestCtx.ui.setFooter(undefined);
       latestCtx.ui.setEditorComponent(undefined);
     }
     latestCtx = null;
