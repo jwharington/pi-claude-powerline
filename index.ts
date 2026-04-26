@@ -665,8 +665,9 @@ export default function (pi: ExtensionAPI) {
             const segments: RenderSegment[] = [];
 
             if (segmentVisibility.directory) {
+              const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
               for (const [index, part] of dirParts.entries()) {
-                const text = index === 0 ? `📁 ${part}` : part;
+                const text = index === 0 ? `${dirIcon} ${part}` : part;
                 segments.push({ id: "directory", text, color: currentTheme.directory });
               }
             }
