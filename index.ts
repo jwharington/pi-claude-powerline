@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
@@ -559,6 +559,23 @@ function writePersistedConfig(cwd: string, config: PersistedConfig): boolean {
   }
 }
 
+class PowerlineBorderEditor extends CustomEditor {
+  override render(width: number): string[] {
+    const lines = super.render(width);
+    if (lines.length === 0) return lines;
+
+    const inner = Math.max(0, width - 2);
+    lines[0] = this.borderColor(`╘${"═".repeat(inner)}╛`);
+
+    if (lines.length > 1) {
+      const last = lines.length - 1;
+      lines[last] = this.borderColor(`╒${"═".repeat(inner)}╕`);
+    }
+
+    return lines;
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let enabled = true;
   let theme: ThemeName = "dark";
@@ -608,8 +625,12 @@ export default function (pi: ExtensionAPI) {
     if (!enabled) {
       ctx.ui.setWidget(WIDGET_KEY, undefined);
       ctx.ui.setFooter(undefined);
+      ctx.ui.setEditorComponent(undefined);
       return;
     }
+
+    // Prompt border style customization.
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => new PowerlineBorderEditor(tui, theme, keybindings));
 
     // Keep only non-redundant footer info (extension status texts).
     ctx.ui.setFooter((_tui, uiTheme, footerData) => ({
@@ -738,6 +759,7 @@ export default function (pi: ExtensionAPI) {
     if (latestCtx?.hasUI) {
       latestCtx.ui.setWidget(WIDGET_KEY, undefined);
       latestCtx.ui.setFooter(undefined);
+      latestCtx.ui.setEditorComponent(undefined);
     }
     latestCtx = null;
   });
