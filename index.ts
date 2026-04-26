@@ -665,8 +665,9 @@ export default function (pi: ExtensionAPI) {
             const segments: RenderSegment[] = [];
 
             if (segmentVisibility.directory) {
-              for (const part of dirParts) {
-                segments.push({ id: "directory", text: part, color: currentTheme.directory });
+              for (const [index, part] of dirParts.entries()) {
+                const text = index === 0 ? `📁 ${part}` : part;
+                segments.push({ id: "directory", text, color: currentTheme.directory });
               }
             }
             if (segmentVisibility.git) segments.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
