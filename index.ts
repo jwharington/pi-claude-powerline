@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
@@ -244,9 +244,31 @@ function shouldRenderSeparator(
 }
 
 function separatorGlyph(current: RenderSegment, next: RenderSegment): string {
+  if (current.id === "directory" && next.id === "directory") return "";
   if (next.id === "model") return "◣"; // U+25E3
   if (current.id === "model") return "◤"; // U+25E4
   return POWERLINE_GLYPH;
+}
+
+function blendHex(a: string, b: string, t: number): string {
+  const [ar, ag, ab] = hexToRgb(a);
+  const [br, bgc, bb] = hexToRgb(b);
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * t);
+  const r = mix(ar, br).toString(16).padStart(2, "0");
+  const g = mix(ag, bgc).toString(16).padStart(2, "0");
+  const bl = mix(ab, bb).toString(16).padStart(2, "0");
+  return `#${r}${g}${bl}`;
+}
+
+function renderSeparator(current: RenderSegment, next: RenderSegment): string {
+  const sep = separatorGlyph(current, next);
+
+  if (current.id === "directory" && next.id === "directory") {
+    const sepColor = blendHex(current.color.fg, current.color.bg, 0.45);
+    return `${fg(sepColor)}${bg(current.color.bg)}${sep}${RESET}`;
+  }
+
+  return `${fg(current.color.bg)}${bg(next.color.bg)}${sep}${RESET}`;
 }
 
 function renderPowerlineRow(
@@ -273,8 +295,7 @@ function renderPowerlineRow(
 
       if (next) {
         if (shouldRenderSeparator(current, next, options)) {
-          const sep = separatorGlyph(current, next);
-          out += `${fg(current.color.bg)}${bg(next.color.bg)}${sep}${RESET}`;
+          out += renderSeparator(current, next);
         }
       } else {
         out += `${fg(current.color.bg)}${POWERLINE_GLYPH}${RESET}`;
@@ -304,7 +325,7 @@ function renderPowerlineRow(
 
     if (shouldRenderSeparator(current, next, options)) {
       const sep = separatorGlyph(current, next);
-      out += `${fg(current.color.bg)}${bg(next.color.bg)}${sep}${RESET}`;
+      out += renderSeparator(current, next);
       usedWidth += visibleWidth(sep);
     }
   }
@@ -384,6 +405,44 @@ function parseEnvLabel(): string | null {
     ?? null;
 
   return value ? String(value) : null;
+}
+
+function formatPathAbbreviated(pwd: string, maxLength = 54): string {
+  let path = pwd;
+  const home = process.env.HOME || process.env.USERPROFILE;
+
+  if (home && path.startsWith(home)) {
+    path = `~${path.slice(home.length)}`;
+  }
+
+  if (path.startsWith("/work/")) {
+    path = path.slice(6);
+  }
+
+  if (path.length > maxLength) {
+    path = `…${path.slice(-(maxLength - 1))}`;
+  }
+
+  return path;
+}
+
+function splitPathForPowerline(pathText: string): string[] {
+  const normalized = pathText.replace(/\\/g, "/");
+  if (!normalized) return ["/"];
+
+  if (normalized === "/") return ["/"];
+
+  if (normalized.startsWith("~/")) {
+    const rest = normalized.slice(2).split("/").filter(Boolean);
+    return ["~", ...rest];
+  }
+
+  if (normalized.startsWith("/")) {
+    const rest = normalized.slice(1).split("/").filter(Boolean);
+    return rest.length > 0 ? rest : ["/"];
+  }
+
+  return normalized.split("/").filter(Boolean);
 }
 
 function parseSegmentKey(value: string): SegmentKey | null {
@@ -587,8 +646,7 @@ export default function (pi: ExtensionAPI) {
             const model = ctx.model?.id ?? "no-model";
             const provider = ctx.model?.provider;
             const thinkingLevel = typeof ctx.getThinkingLevel === "function" ? ctx.getThinkingLevel() : "off";
-            const cwdName = basename(ctx.cwd || process.cwd()) || "/";
-            const sessionName = ctx.sessionManager?.getSessionName?.();
+            const cwdPath = formatPathAbbreviated(ctx.cwd || process.cwd());
             const usage = getUsageStats(ctx);
             const contextUsage = ctx.getContextUsage?.();
             const contextPercent = contextUsage?.percent;
@@ -599,14 +657,18 @@ export default function (pi: ExtensionAPI) {
             const envLabel = parseEnvLabel();
             const tmuxLabel = parseTmuxLabel();
 
-            const dirText = sessionName ? `📁 ${cwdName} • ${sessionName}` : `📁 ${cwdName}`;
+            const dirParts = splitPathForPowerline(cwdPath);
             const modelText = provider
               ? `✱ (${provider}) ${model} • ${thinkingLevel}`
               : `✱ ${model} • ${thinkingLevel}`;
 
             const segments: RenderSegment[] = [];
 
-            if (segmentVisibility.directory) segments.push({ id: "directory", text: dirText, color: currentTheme.directory });
+            if (segmentVisibility.directory) {
+              for (const part of dirParts) {
+                segments.push({ id: "directory", text: part, color: currentTheme.directory });
+              }
+            }
             if (segmentVisibility.git) segments.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
             if (segmentVisibility.session) {
               segments.push({
