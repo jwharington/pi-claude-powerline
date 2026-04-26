@@ -243,6 +243,12 @@ function shouldRenderSeparator(
   return !(options?.omitSeparators?.includes(pair));
 }
 
+function separatorGlyph(current: RenderSegment, next: RenderSegment): string {
+  if (next.id === "model") return "◣"; // U+25E3
+  if (current.id === "model") return "◤"; // U+25E4
+  return POWERLINE_GLYPH;
+}
+
 function renderPowerlineRow(
   segments: RenderSegment[],
   width: number,
@@ -267,7 +273,8 @@ function renderPowerlineRow(
 
       if (next) {
         if (shouldRenderSeparator(current, next, options)) {
-          out += `${fg(current.color.bg)}${bg(next.color.bg)}${POWERLINE_GLYPH}${RESET}`;
+          const sep = separatorGlyph(current, next);
+          out += `${fg(current.color.bg)}${bg(next.color.bg)}${sep}${RESET}`;
         }
       } else {
         out += `${fg(current.color.bg)}${POWERLINE_GLYPH}${RESET}`;
@@ -296,8 +303,9 @@ function renderPowerlineRow(
     usedWidth += visibleWidth(content);
 
     if (shouldRenderSeparator(current, next, options)) {
-      out += `${fg(current.color.bg)}${bg(next.color.bg)}${POWERLINE_GLYPH}${RESET}`;
-      usedWidth += visibleWidth(POWERLINE_GLYPH);
+      const sep = separatorGlyph(current, next);
+      out += `${fg(current.color.bg)}${bg(next.color.bg)}${sep}${RESET}`;
+      usedWidth += visibleWidth(sep);
     }
   }
 
@@ -541,12 +549,8 @@ export default function (pi: ExtensionAPI) {
     if (!enabled) {
       ctx.ui.setWidget(WIDGET_KEY, undefined);
       ctx.ui.setFooter(undefined);
-      ctx.ui.setEditorComponent(undefined);
       return;
     }
-
-    // Keep default editor behavior.
-    ctx.ui.setEditorComponent(undefined);
 
     // Keep only non-redundant footer info (extension status texts).
     ctx.ui.setFooter((_tui, uiTheme, footerData) => ({
@@ -604,7 +608,6 @@ export default function (pi: ExtensionAPI) {
 
             if (segmentVisibility.directory) segments.push({ id: "directory", text: dirText, color: currentTheme.directory });
             if (segmentVisibility.git) segments.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
-            if (segmentVisibility.model) segments.push({ id: "model", text: modelText, color: currentTheme.model });
             if (segmentVisibility.session) {
               segments.push({
                 id: "session",
@@ -616,6 +619,7 @@ export default function (pi: ExtensionAPI) {
             if (segmentVisibility.weekly) segments.push({ id: "weekly", text: `◷ ${fmtCost(usage.weeklyCost)}`, color: currentTheme.weekly });
             if (segmentVisibility.env && envLabel) segments.push({ id: "env", text: `⚑ ${envLabel}`, color: currentTheme.env });
             if (segmentVisibility.tmux && tmuxLabel) segments.push({ id: "tmux", text: `⌂ ${tmuxLabel}`, color: currentTheme.tmux });
+            if (segmentVisibility.model) segments.push({ id: "model", text: modelText, color: currentTheme.model });
 
             let contextRatio: number | undefined;
             if (segmentVisibility.context) {
@@ -670,7 +674,6 @@ export default function (pi: ExtensionAPI) {
     if (latestCtx?.hasUI) {
       latestCtx.ui.setWidget(WIDGET_KEY, undefined);
       latestCtx.ui.setFooter(undefined);
-      latestCtx.ui.setEditorComponent(undefined);
     }
     latestCtx = null;
   });
