@@ -247,6 +247,7 @@ function shouldRenderSeparator(
 
 function separatorGlyph(current: RenderSegment, next: RenderSegment): string {
   if (current.id === "directory" && next.id === "directory") return "";
+  if (current.id === "session" && next.id === "model") return POWERLINE_GLYPH;
   if (next.id === "model") return "◣"; // U+25E3
   if (current.id === "model") return "◤"; // U+25E4
   return POWERLINE_GLYPH;
