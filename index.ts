@@ -134,6 +134,8 @@ const THEMES: Record<ThemeName, ColorTheme> = {
 
 const RESET = "\u001b[0m";
 const POWERLINE_GLYPH = process.env.POWERLINE_NERD_FONTS === "0" ? ">" : "\uE0B0";
+const POWERLINE_LEFT_GLYPH = process.env.POWERLINE_NERD_FONTS === "0" ? "<" : "\uE0B2";
+const POWERLINE_LEFT_THIN_GLYPH = process.env.POWERLINE_NERD_FONTS === "0" ? "|" : "\uE0B3";
 const SPINNER_FRAMES = process.env.POWERLINE_NERD_FONTS === "0"
   ? ["-", "\\", "|", "/"]
   : ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -365,11 +367,19 @@ function renderPowerlineRow(
     }
 
     const filledPart = chars.slice(0, splitIndex).join("");
-    const unfilledPart = chars.slice(splitIndex).join("");
+    let unfilledPart = chars.slice(splitIndex).join("");
     const unfilledBg = options.fillLastUnusedBg ?? last.color.bg;
+    const showUsedFreeBoundary = fillWidth > 0 && fillWidth < lastAreaWidth;
+
+    if (showUsedFreeBoundary) {
+      unfilledPart = trimLeadingVisibleWidth(unfilledPart, visibleWidth("◤"));
+    }
 
     if (filledPart.length > 0) {
       out += `${fg(last.color.fg)}${bg(last.color.bg)}${filledPart}${RESET}`;
+    }
+    if (showUsedFreeBoundary) {
+      out += `${fg(last.color.bg)}${bg(unfilledBg)}◤${RESET}`;
     }
     if (unfilledPart.length > 0) {
       out += `${fg(last.color.fg)}${bg(unfilledBg)}${unfilledPart}${RESET}`;
@@ -387,6 +397,58 @@ function renderPowerlineRow(
   }
 
   return truncateToWidth(out, width);
+}
+
+type FooterSegment = {
+  text: string;
+  color: SegmentColor;
+  group: number;
+  kind: "extension" | "manager";
+};
+
+function renderFooterSeparator(current: FooterSegment, next: FooterSegment): string {
+  if (current.kind === "extension" && next.kind === "extension") {
+    const sepColor = blendHex(current.color.fg, current.color.bg, 0.45);
+    return `${fg(sepColor)}${bg(current.color.bg)}${POWERLINE_LEFT_THIN_GLYPH}${RESET}`;
+  }
+
+  if (current.kind === "manager" && next.kind === "manager") {
+    const sepColor = blendHex(current.color.fg, current.color.bg, 0.45);
+    return `${fg(sepColor)}${bg(current.color.bg)}${RESET}`;
+  }
+
+  return `${fg(next.color.bg)}${bg(current.color.bg)}${POWERLINE_LEFT_GLYPH}${RESET}`;
+}
+
+function renderReversePowerlineRow(
+  segments: FooterSegment[],
+  width: number,
+  options?: { fillLeft?: boolean },
+): string {
+  if (segments.length === 0) return "";
+
+  let out = "";
+  for (let i = 0; i < segments.length; i += 1) {
+    const current = segments[i]!;
+    out += `${fg(current.color.fg)}${bg(current.color.bg)} ${current.text} ${RESET}`;
+
+    const next = segments[i + 1];
+    if (next) {
+      out += renderFooterSeparator(current, next);
+    }
+  }
+
+  const row = truncateToWidth(out, width);
+  const pad = Math.max(0, width - visibleWidth(row));
+  if (pad <= 0) return row;
+
+  if (options?.fillLeft === false) {
+    return `${" ".repeat(pad)}${row}`;
+  }
+
+  const lhsFillColor = segments[0]!.color.bg;
+  const lhsFill = `${bg(lhsFillColor)}${" ".repeat(pad)}${RESET}`;
+  return `${lhsFill}${row}`;
 }
 
 function parseTmuxLabel(): string | null {
@@ -468,9 +530,26 @@ function mutedContextFillColor(percent: number | undefined, fallback: SegmentCol
 
 function sanitizeStatusText(text: string): string {
   return text
+    .replace(/\x1b\[[0-9;]*m/g, "")
     .replace(/[\r\n\t]/g, " ")
     .replace(/ +/g, " ")
     .trim();
+}
+
+function abbreviateSessionName(name: string, maxWidth = 18): string {
+  const clean = sanitizeStatusText(name);
+  if (!clean) return "";
+  if (visibleWidth(clean) <= maxWidth) return clean;
+
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    const initials = words.map((word) => word[0]).join("");
+    if (visibleWidth(initials) <= maxWidth) {
+      return initials;
+    }
+  }
+
+  return truncateToWidth(clean, maxWidth, "…");
 }
 
 function frameWithBorderRails(content: string, width: number, rail: (text: string) => string): string {
@@ -483,6 +562,21 @@ function frameWithBorderRails(content: string, width: number, rail: (text: strin
   const inner = `${clipped}${" ".repeat(pad)}`;
 
   return `${rail("│")}${inner}${rail("│")}`;
+}
+
+function trimLeadingVisibleWidth(text: string, widthToTrim: number): string {
+  if (widthToTrim <= 0) return text;
+
+  const chars = Array.from(text);
+  let consumed = 0;
+  let index = 0;
+
+  while (index < chars.length && consumed < widthToTrim) {
+    consumed += visibleWidth(chars[index] ?? "");
+    index += 1;
+  }
+
+  return chars.slice(index).join("");
 }
 
 function resolveThinkingLevel(ctx: any): string {
@@ -709,21 +803,66 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setFooter((_tui, uiTheme, footerData) => ({
       invalidate() {},
       render(width: number): string[] {
-        const statuses = Array.from(footerData.getExtensionStatuses().entries())
+        const currentTheme = THEMES[theme];
+        const statusEntries = Array.from(footerData.getExtensionStatuses().entries())
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([, value]) => sanitizeStatusText(value))
-          .filter((value) => value.length > 0);
+          .map(([key, value]) => ({ key, text: sanitizeStatusText(value) }))
+          .filter((entry) => entry.text.length > 0);
 
-        if (statuses.length === 0) return [];
+        const managerEntry = statusEntries.find((entry) => entry.key === "pi-extension-manager"
+          || /\bpkgs?\b|auto-update/i.test(entry.text));
+        const extensionEntries = statusEntries.filter((entry) => entry !== managerEntry);
+
+        const extensionTextFg = currentTheme.model.fg;
+
+        const footerSegments: FooterSegment[] = [];
+        for (const [idx, entry] of extensionEntries.entries()) {
+          footerSegments.push({
+            text: entry.text,
+            color: { ...currentTheme.directory, fg: extensionTextFg },
+            group: idx,
+            kind: "extension",
+          });
+        }
+
+        if (managerEntry) {
+          const managerParts = managerEntry.text.split(/\s+\.\s+/).map((part) => part.trim()).filter(Boolean);
+          const managerGroup = extensionEntries.length;
+          for (const part of managerParts) {
+            footerSegments.push({
+              text: part,
+              color: { ...currentTheme.git, fg: extensionTextFg },
+              group: managerGroup,
+              kind: "manager",
+            });
+          }
+        }
+
+        const sessionNameRaw = pi.getSessionName?.() ?? "";
+        const sessionName = abbreviateSessionName(sessionNameRaw);
+        const hasSession = sessionName.length > 0;
+
+        if (footerSegments.length === 0 && !hasSession) return [];
+
+        const sessionSegment = hasSession
+          ? `${fg(currentTheme.session.fg)}${bg(currentTheme.session.bg)} § ${sessionName} ${RESET}`
+          : "";
+        const sessionSegmentWidth = hasSession ? visibleWidth(` § ${sessionName} `) : 0;
+
+        const sessionSeparator = (hasSession && footerSegments.length > 0)
+          ? `${fg(currentTheme.session.bg)}${bg(footerSegments[0]!.color.bg)}${POWERLINE_GLYPH}${RESET}`
+          : "";
+        const sessionSeparatorWidth = sessionSeparator.length > 0 ? visibleWidth(POWERLINE_GLYPH) : 0;
 
         const railColor = getPromptBorderColorFn(ctx, uiTheme);
         const innerWidth = Math.max(0, width - 2);
-        const raw = statuses.join(" ");
-        const truncated = truncateToWidth(raw, innerWidth, "...");
-        const pad = Math.max(0, innerWidth - visibleWidth(truncated));
-        const rightAligned = `${" ".repeat(pad)}${truncated}`;
+        const rightWidth = Math.max(0, innerWidth - sessionSegmentWidth - sessionSeparatorWidth);
+        const rightAlignedPowerline = footerSegments.length > 0
+          ? renderReversePowerlineRow(footerSegments, rightWidth, { fillLeft: hasSession })
+          : " ".repeat(rightWidth);
 
-        return [frameWithBorderRails(uiTheme.fg("dim", rightAligned), width, railColor)];
+        const composed = `${sessionSegment}${sessionSeparator}${rightAlignedPowerline}`;
+        return [frameWithBorderRails(composed, width, railColor)];
       },
     }));
 
