@@ -6,7 +6,7 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 const WIDGET_KEY = "claude-powerline-bar";
-
+let latestEditorBorderColor: ((text: string) => string) | null = null;
 
 type ThemeName = "dark" | "light" | "nord" | "tokyo-night" | "rose-pine" | "gruvbox";
 type SegmentKey =
@@ -473,6 +473,71 @@ function sanitizeStatusText(text: string): string {
     .trim();
 }
 
+function frameWithBorderRails(content: string, width: number, rail: (text: string) => string): string {
+  if (width <= 0) return "";
+  if (width <= 2) return truncateToWidth(content, width, "...");
+
+  const innerWidth = width - 2;
+  const clipped = truncateToWidth(content, innerWidth, "...");
+  const pad = Math.max(0, innerWidth - visibleWidth(clipped));
+  const inner = `${clipped}${" ".repeat(pad)}`;
+
+  return `${rail("│")}${inner}${rail("│")}`;
+}
+
+function resolveThinkingLevel(ctx: any): string {
+  const branch = ctx?.sessionManager?.getBranch?.();
+  if (Array.isArray(branch)) {
+    for (let i = branch.length - 1; i >= 0; i -= 1) {
+      const entry = branch[i] as any;
+      if (entry?.type === "thinking_level_change" && typeof entry?.thinkingLevel === "string") {
+        return entry.thinkingLevel;
+      }
+    }
+  }
+
+  if (typeof ctx?.sessionManager?.state?.thinkingLevel === "string") {
+    return ctx.sessionManager.state.thinkingLevel;
+  }
+
+  if (typeof ctx?.thinkingLevel === "string") {
+    return ctx.thinkingLevel;
+  }
+
+  if (typeof ctx?.getThinkingLevel === "function") {
+    const level = ctx.getThinkingLevel();
+    if (typeof level === "string") return level;
+  }
+
+  return "off";
+}
+
+function getPromptBorderColorFn(ctx: any, uiTheme: any): (text: string) => string {
+  if (latestEditorBorderColor) {
+    return latestEditorBorderColor;
+  }
+
+  const fallback = (text: string) => uiTheme?.fg ? uiTheme.fg("borderMuted", text) : text;
+
+  if (!uiTheme?.fg) return fallback;
+
+  if (ctx?.shellModeActive) {
+    return (text: string) => uiTheme.fg("bashMode", text);
+  }
+
+  const level = resolveThinkingLevel(ctx);
+  const colorByLevel: Record<string, string> = {
+    off: "thinkingOff",
+    minimal: "thinkingMinimal",
+    low: "thinkingLow",
+    medium: "thinkingMedium",
+    high: "thinkingHigh",
+    xhigh: "thinkingXhigh",
+  };
+
+  const colorKey = colorByLevel[level] ?? "thinkingOff";
+  return (text: string) => uiTheme.fg(colorKey, text);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -561,6 +626,13 @@ function writePersistedConfig(cwd: string, config: PersistedConfig): boolean {
 
 class PowerlineBorderEditor extends CustomEditor {
   override render(width: number): string[] {
+    const borderColorChanged = latestEditorBorderColor !== this.borderColor;
+    latestEditorBorderColor = this.borderColor;
+
+    if (borderColorChanged) {
+      this.tui.requestRender();
+    }
+
     const lines = super.render(width);
     if (lines.length === 0) return lines;
 
@@ -623,6 +695,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
 
     if (!enabled) {
+      latestEditorBorderColor = null;
       ctx.ui.setWidget(WIDGET_KEY, undefined);
       ctx.ui.setFooter(undefined);
       ctx.ui.setEditorComponent(undefined);
@@ -643,11 +716,14 @@ export default function (pi: ExtensionAPI) {
 
         if (statuses.length === 0) return [];
 
+        const railColor = getPromptBorderColorFn(ctx, uiTheme);
+        const innerWidth = Math.max(0, width - 2);
         const raw = statuses.join(" ");
-        const truncated = truncateToWidth(raw, width, "...");
-        const pad = Math.max(0, width - visibleWidth(truncated));
-        const line = `${" ".repeat(pad)}${truncated}`;
-        return [uiTheme.fg("dim", line)];
+        const truncated = truncateToWidth(raw, innerWidth, "...");
+        const pad = Math.max(0, innerWidth - visibleWidth(truncated));
+        const rightAligned = `${" ".repeat(pad)}${truncated}`;
+
+        return [frameWithBorderRails(uiTheme.fg("dim", rightAligned), width, railColor)];
       },
     }));
 
@@ -666,7 +742,7 @@ export default function (pi: ExtensionAPI) {
             const currentTheme = THEMES[theme];
             const model = ctx.model?.id ?? "no-model";
             const provider = ctx.model?.provider;
-            const thinkingLevel = typeof ctx.getThinkingLevel === "function" ? ctx.getThinkingLevel() : "off";
+            const thinkingLevel = resolveThinkingLevel(ctx);
             const cwdPath = formatPathAbbreviated(ctx.cwd || process.cwd());
             const usage = getUsageStats(ctx);
             const contextUsage = ctx.getContextUsage?.();
@@ -708,19 +784,26 @@ export default function (pi: ExtensionAPI) {
 
             let contextRatio: number | undefined;
             if (segmentVisibility.context) {
-              const contextColor = mutedContextFillColor(contextPercent, currentTheme.context);
+              const hasContextPercent = typeof contextPercent === "number" && Number.isFinite(contextPercent);
+              const contextColor = hasContextPercent
+                ? mutedContextFillColor(contextPercent, currentTheme.context)
+                : { bg: "#1f2937", fg: currentTheme.context.fg };
               segments.push({ id: "context", text: contextText, color: contextColor });
-              contextRatio = typeof contextPercent === "number" ? contextPercent / 100 : 0;
+              contextRatio = hasContextPercent ? contextPercent / 100 : 0;
             }
 
-            return [renderPowerlineRow(segments, width, {
+            const railColor = getPromptBorderColorFn(ctx, ctx.ui.theme);
+            const innerWidth = Math.max(0, width - 2);
+            const powerline = renderPowerlineRow(segments, innerWidth, {
               fillLast: segmentVisibility.context,
               fillLastRatio: segmentVisibility.context ? contextRatio : undefined,
               fillLastUnusedBg: "#1f2937",
               omitLastGlyph: segmentVisibility.context,
               rightAlignLastText: segmentVisibility.context,
               omitSeparators: ["git:model"],
-            })];
+            });
+
+            return [frameWithBorderRails(powerline, width, railColor)];
           },
         };
       },
@@ -757,6 +840,7 @@ export default function (pi: ExtensionAPI) {
     stopSpinner();
     requestRender = null;
     if (latestCtx?.hasUI) {
+      latestEditorBorderColor = null;
       latestCtx.ui.setWidget(WIDGET_KEY, undefined);
       latestCtx.ui.setFooter(undefined);
       latestCtx.ui.setEditorComponent(undefined);
