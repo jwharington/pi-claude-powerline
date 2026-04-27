@@ -422,6 +422,20 @@ function renderFooterSeparator(current: FooterSegment, next: FooterSegment): str
   return `${fg(next.color.bg)}${bg(current.color.bg)}${POWERLINE_LEFT_GLYPH}${RESET}`;
 }
 
+function renderFooterSessionTransition(sessionBg: string, nextBg: string): string {
+  const shades: Array<[string, number, number]> = [
+    ["▓", 0.2, 0.08],
+    ["▒", 0.5, 0.5],
+    ["░", 0.8, 0.92],
+  ];
+
+  return shades.map(([glyph, bgT, fgT]) => {
+    const tileBg = blendHex(sessionBg, nextBg, bgT);
+    const tileFg = blendHex(sessionBg, nextBg, fgT);
+    return `${fg(tileFg)}${bg(tileBg)}${glyph}${RESET}`;
+  }).join("");
+}
+
 function renderReversePowerlineRow(
   segments: FooterSegment[],
   width: number,
@@ -1020,8 +1034,8 @@ export default function (pi: ExtensionAPI) {
         }
 
         const sessionNameRaw = pi.getSessionName?.() ?? "";
-        const sessionName = abbreviateSessionName(sessionNameRaw);
-        const hasSession = sessionName.length > 0;
+        const sessionName = abbreviateSessionName(sessionNameRaw) || "<anon>";
+        const hasSession = true;
         const thinkingLevel = resolveThinkingLevel(ctx);
         const thinkingText = formatThinkingLevelText(thinkingLevel);
 
@@ -1038,9 +1052,9 @@ export default function (pi: ExtensionAPI) {
         const sessionSegmentWidth = hasSession ? visibleWidth(` § ${sessionName} `) : 0;
 
         const sessionSeparator = hasSession
-          ? `${fg(currentTheme.session.bg)}${bg(footerSegments[0]!.color.bg)}${POWERLINE_GLYPH}${RESET}`
+          ? renderFooterSessionTransition(currentTheme.session.bg, footerSegments[0]!.color.bg)
           : "";
-        const sessionSeparatorWidth = sessionSeparator.length > 0 ? visibleWidth(POWERLINE_GLYPH) : 0;
+        const sessionSeparatorWidth = sessionSeparator.length > 0 ? visibleWidth(sessionSeparator) : 0;
 
         const railColor = getPromptBorderColorFn(ctx, uiTheme);
         const innerWidth = Math.max(0, width - 2);
