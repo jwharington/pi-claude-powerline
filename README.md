@@ -58,4 +58,5 @@ export POWERLINE_NERD_FONTS=0
 
 This switches separators to ASCII (`>`).
 - The footer is enabled by default when the extension loads.
+- If the context segment would take less than a quarter of the available width, the model provider label is abbreviated to preserve space for context.
 - Theme JSONs are still provided so you can also pick `claude-powerline-*` in `/settings`.

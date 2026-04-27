@@ -553,6 +553,53 @@ function abbreviateSessionName(name: string, maxWidth = 18): string {
   return truncateToWidth(clean, maxWidth, "…");
 }
 
+function abbreviateProviderName(name: string, maxWidth = 4): string {
+  const clean = sanitizeStatusText(name);
+  if (!clean) return "";
+  if (visibleWidth(clean) <= maxWidth) return clean;
+
+  const parts = clean.split(/[\s./_-]+/).filter(Boolean);
+  if (parts.length > 1) {
+    const initials = parts.map((part) => part[0]).join("");
+    if (visibleWidth(initials) <= maxWidth) {
+      return initials;
+    }
+  }
+
+  return truncateToWidth(clean, maxWidth, "…");
+}
+
+function formatModelText(model: string, provider: string | undefined, thinkingLevel: string, abbreviateProvider = false): string {
+  if (provider) {
+    const providerText = abbreviateProvider ? abbreviateProviderName(provider) : provider;
+    return `✱ (${providerText}) ${model} • ${thinkingLevel}`;
+  }
+
+  return `✱ ${model} • ${thinkingLevel}`;
+}
+
+function estimateFillLastRemainingWidth(
+  segments: RenderSegment[],
+  width: number,
+  options?: { omitSeparators?: string[] },
+): number {
+  if (segments.length === 0) return width;
+
+  let usedWidth = 0;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const current = segments[i]!;
+    const next = segments[i + 1]!;
+
+    usedWidth += visibleWidth(` ${current.text} `);
+
+    if (shouldRenderSeparator(current, next, options)) {
+      usedWidth += visibleWidth(separatorGlyph(current, next));
+    }
+  }
+
+  return Math.max(0, width - usedWidth);
+}
+
 function frameWithBorderRails(content: string, width: number, rail: (text: string) => string): string {
   if (width <= 0) return "";
   if (width <= 2) return truncateToWidth(content, width, "...");
@@ -895,45 +942,58 @@ export default function (pi: ExtensionAPI) {
             const tmuxLabel = parseTmuxLabel();
 
             const dirParts = splitPathForPowerline(cwdPath);
-            const modelText = provider
-              ? `✱ (${provider}) ${model} • ${thinkingLevel}`
-              : `✱ ${model} • ${thinkingLevel}`;
+            const buildSegments = (abbreviateProvider = false): RenderSegment[] => {
+              const modelText = formatModelText(model, provider, thinkingLevel, abbreviateProvider);
+              const parts: RenderSegment[] = [];
 
-            const segments: RenderSegment[] = [];
-
-            if (segmentVisibility.directory) {
-              const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
-              for (const [index, part] of dirParts.entries()) {
-                const text = index === 0 ? `${dirIcon} ${part}` : part;
-                segments.push({ id: "directory", text, color: currentTheme.directory });
+              if (segmentVisibility.directory) {
+                const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
+                for (const [index, part] of dirParts.entries()) {
+                  const text = index === 0 ? `${dirIcon} ${part}` : part;
+                  parts.push({ id: "directory", text, color: currentTheme.directory });
+                }
               }
-            }
-            if (segmentVisibility.git) segments.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
-            if (segmentVisibility.session) {
-              segments.push({
-                id: "session",
-                text: `§ ↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)} R${fmtTokens(usage.cacheRead)} W${fmtTokens(usage.cacheWrite)} ${fmtCost(usage.sessionCost)}`,
-                color: currentTheme.session,
-              });
-            }
-            if (segmentVisibility.today) segments.push({ id: "today", text: `☀ ${fmtCost(usage.todayCost)}`, color: currentTheme.today });
-            if (segmentVisibility.weekly) segments.push({ id: "weekly", text: `◷ ${fmtCost(usage.weeklyCost)}`, color: currentTheme.weekly });
-            if (segmentVisibility.env && envLabel) segments.push({ id: "env", text: `⚑ ${envLabel}`, color: currentTheme.env });
-            if (segmentVisibility.tmux && tmuxLabel) segments.push({ id: "tmux", text: `⌂ ${tmuxLabel}`, color: currentTheme.tmux });
-            if (segmentVisibility.model) segments.push({ id: "model", text: modelText, color: currentTheme.model });
+              if (segmentVisibility.git) parts.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
+              if (segmentVisibility.session) {
+                parts.push({
+                  id: "session",
+                  text: `§ ↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)} R${fmtTokens(usage.cacheRead)} W${fmtTokens(usage.cacheWrite)} ${fmtCost(usage.sessionCost)}`,
+                  color: currentTheme.session,
+                });
+              }
+              if (segmentVisibility.today) parts.push({ id: "today", text: `☀ ${fmtCost(usage.todayCost)}`, color: currentTheme.today });
+              if (segmentVisibility.weekly) parts.push({ id: "weekly", text: `◷ ${fmtCost(usage.weeklyCost)}`, color: currentTheme.weekly });
+              if (segmentVisibility.env && envLabel) parts.push({ id: "env", text: `⚑ ${envLabel}`, color: currentTheme.env });
+              if (segmentVisibility.tmux && tmuxLabel) parts.push({ id: "tmux", text: `⌂ ${tmuxLabel}`, color: currentTheme.tmux });
+              if (segmentVisibility.model) parts.push({ id: "model", text: modelText, color: currentTheme.model });
 
-            let contextRatio: number | undefined;
-            if (segmentVisibility.context) {
-              const hasContextPercent = typeof contextPercent === "number" && Number.isFinite(contextPercent);
-              const contextColor = hasContextPercent
-                ? mutedContextFillColor(contextPercent, currentTheme.context)
-                : { bg: "#1f2937", fg: currentTheme.context.fg };
-              segments.push({ id: "context", text: contextText, color: contextColor });
-              contextRatio = hasContextPercent ? contextPercent / 100 : 0;
-            }
+              if (segmentVisibility.context) {
+                const hasContextPercent = typeof contextPercent === "number" && Number.isFinite(contextPercent);
+                const contextColor = hasContextPercent
+                  ? mutedContextFillColor(contextPercent, currentTheme.context)
+                  : { bg: "#1f2937", fg: currentTheme.context.fg };
+                parts.push({ id: "context", text: contextText, color: contextColor });
+              }
+
+              return parts;
+            };
+
+            const innerWidth = Math.max(0, width - 2);
+            const defaultSegments = buildSegments(false);
+            const contextRemaining = segmentVisibility.context
+              ? estimateFillLastRemainingWidth(defaultSegments, innerWidth, { omitSeparators: ["git:model"] })
+              : innerWidth;
+            const shouldAbbreviateProvider = segmentVisibility.context
+              && typeof provider === "string"
+              && provider.length > 0
+              && contextRemaining < innerWidth / 4;
+            const segments = shouldAbbreviateProvider ? buildSegments(true) : defaultSegments;
+
+            const contextRatio = segmentVisibility.context
+              ? (typeof contextPercent === "number" && Number.isFinite(contextPercent) ? contextPercent / 100 : 0)
+              : undefined;
 
             const railColor = getPromptBorderColorFn(ctx, ctx.ui.theme);
-            const innerWidth = Math.max(0, width - 2);
             const powerline = renderPowerlineRow(segments, innerWidth, {
               fillLast: segmentVisibility.context,
               fillLastRatio: segmentVisibility.context ? contextRatio : undefined,
