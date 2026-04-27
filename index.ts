@@ -471,7 +471,7 @@ function parseEnvLabel(): string | null {
   return value ? String(value) : null;
 }
 
-function formatPathAbbreviated(pwd: string, maxLength = 54): string {
+function formatPathAbbreviated(pwd: string, maxWidth = 54): string {
   let path = pwd;
   const home = process.env.HOME || process.env.USERPROFILE;
 
@@ -483,11 +483,88 @@ function formatPathAbbreviated(pwd: string, maxLength = 54): string {
     path = path.slice(6);
   }
 
-  if (path.length > maxLength) {
-    path = `…${path.slice(-(maxLength - 1))}`;
+  if (visibleWidth(path) > maxWidth) {
+    path = truncateToWidth(path, maxWidth, "…");
   }
 
   return path;
+}
+
+function abbreviateGitLabel(name: string, maxWidth = 18): string {
+  const clean = sanitizeStatusText(name);
+  if (!clean) return "";
+  if (visibleWidth(clean) <= maxWidth) return clean;
+
+  const parts = clean.split(/[\s./_-]+/).filter(Boolean);
+  if (parts.length > 1) {
+    const initials = parts.map((part) => part[0]).join("");
+    if (visibleWidth(initials) <= maxWidth) {
+      return initials;
+    }
+  }
+
+  return truncateToWidth(clean, maxWidth, "…");
+}
+
+function directoryPrefixWidth(pathText: string, dirIcon: string): number {
+  const parts = splitPathForPowerline(pathText);
+  if (parts.length === 0) return 0;
+
+  let width = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    const text = i === 0 ? `${dirIcon} ${parts[i]}` : parts[i];
+    width += visibleWidth(` ${text} `);
+    if (i < parts.length - 1) {
+      width += visibleWidth("");
+    }
+  }
+
+  return width;
+}
+
+function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: number, dirIcon: string): {
+  path: string;
+  gitLabel: string;
+} {
+  const gitSource = gitBranch && gitBranch.length > 0 ? gitBranch : "no-git";
+  if (budget <= 0) {
+    return { path: "", gitLabel: "" };
+  }
+
+  const normalizedPath = formatPathAbbreviated(pwd, Number.MAX_SAFE_INTEGER);
+  const maxPathWidth = Math.max(1, visibleWidth(normalizedPath));
+
+  let lo = 1;
+  let hi = maxPathWidth;
+  let bestPath = formatPathAbbreviated(pwd, 1);
+  let bestGitLabel = abbreviateGitLabel(gitSource, 0);
+
+  const fits = (pathWidth: number): { ok: boolean; path: string; gitLabel: string } => {
+    const path = formatPathAbbreviated(pwd, pathWidth);
+    const pathRenderedWidth = directoryPrefixWidth(path, dirIcon);
+    const separatorWidth = pathRenderedWidth > 0 ? visibleWidth("") : 0;
+    const availableForGitSegment = budget - pathRenderedWidth - separatorWidth;
+    const gitLabelBudget = Math.max(0, availableForGitSegment - 4);
+    const gitLabel = abbreviateGitLabel(gitSource, gitLabelBudget);
+    const gitRenderedWidth = visibleWidth(` ⎇ ${gitLabel} `);
+    const totalWidth = pathRenderedWidth + separatorWidth + gitRenderedWidth;
+
+    return { ok: totalWidth <= budget, path, gitLabel };
+  };
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = fits(mid);
+    if (candidate.ok) {
+      bestPath = candidate.path;
+      bestGitLabel = candidate.gitLabel;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return { path: bestPath, gitLabel: bestGitLabel };
 }
 
 function splitPathForPowerline(pathText: string): string[] {
@@ -928,10 +1005,10 @@ export default function (pi: ExtensionAPI) {
           invalidate() {},
           render(width: number): string[] {
             const currentTheme = THEMES[theme];
+            const innerWidth = Math.max(0, width - 2);
             const model = ctx.model?.id ?? "no-model";
             const provider = ctx.model?.provider;
             const thinkingLevel = resolveThinkingLevel(ctx);
-            const cwdPath = formatPathAbbreviated(ctx.cwd || process.cwd());
             const usage = getUsageStats(ctx);
             const contextUsage = ctx.getContextUsage?.();
             const contextPercent = contextUsage?.percent;
@@ -941,20 +1018,26 @@ export default function (pi: ExtensionAPI) {
               : `◔ ?/${fmtTokens(contextWindow)}`;
             const envLabel = parseEnvLabel();
             const tmuxLabel = parseTmuxLabel();
-
-            const dirParts = splitPathForPowerline(cwdPath);
+            const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
+            const prefixBudget = Math.floor(innerWidth / 4);
+            const cwdSource = ctx.cwd || process.cwd();
+            const prefixLayout = segmentVisibility.git
+              ? fitPathAndGitPrefix(cwdSource, gitBranch, prefixBudget, dirIcon)
+              : { path: formatPathAbbreviated(cwdSource, prefixBudget), gitLabel: gitBranch || "no-git" };
+            const cwdPath = prefixLayout.path;
+            const gitLabel = prefixLayout.gitLabel;
+            const dirParts = cwdPath.length > 0 ? splitPathForPowerline(cwdPath) : [];
             const buildSegments = (abbreviateProvider = false): RenderSegment[] => {
               const modelText = formatModelText(model, provider, thinkingLevel, abbreviateProvider);
               const parts: RenderSegment[] = [];
 
               if (segmentVisibility.directory) {
-                const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
                 for (const [index, part] of dirParts.entries()) {
                   const text = index === 0 ? `${dirIcon} ${part}` : part;
                   parts.push({ id: "directory", text, color: currentTheme.directory });
                 }
               }
-              if (segmentVisibility.git) parts.push({ id: "git", text: gitBranch ? `⎇ ${gitBranch}` : "⎇ no-git", color: currentTheme.git });
+              if (segmentVisibility.git) parts.push({ id: "git", text: `⎇ ${gitLabel}`, color: currentTheme.git });
               if (segmentVisibility.session) {
                 parts.push({
                   id: "session",
@@ -979,7 +1062,6 @@ export default function (pi: ExtensionAPI) {
               return parts;
             };
 
-            const innerWidth = Math.max(0, width - 2);
             const defaultSegments = buildSegments(false);
             const contextRemaining = segmentVisibility.context
               ? estimateFillLastRemainingWidth(defaultSegments, innerWidth, { omitSeparators: ["git:model"] })
