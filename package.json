@@ -14,9 +14,14 @@
   "license": "MIT",
   "files": [
     "index.ts",
+    "powerline-glyphs.ts",
+    "tests/*.test.ts",
     "themes/*.json",
     "README.md"
   ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test ./tests/*.test.ts"
+  },
   "pi": {
     "extensions": [
       "./index.ts"

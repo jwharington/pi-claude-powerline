@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { fillBoundaryGlyph, separatorGlyph } from "./powerline-glyphs.ts";
 
 const WIDGET_KEY = "claude-powerline-bar";
 let latestEditorBorderColor: ((text: string) => string) | null = null;
@@ -245,13 +246,6 @@ function shouldRenderSeparator(
   return !(options?.omitSeparators?.includes(pair));
 }
 
-function separatorGlyph(current: RenderSegment, next: RenderSegment): string {
-  if (current.id === "directory" && next.id === "directory") return "";
-  if (current.id === "session" && next.id === "model") return POWERLINE_GLYPH;
-  if (next.id === "model") return "◣"; // U+25E3
-  if (current.id === "model") return "◤"; // U+25E4
-  return POWERLINE_GLYPH;
-}
 
 function blendHex(a: string, b: string, t: number): string {
   const [ar, ag, ab] = hexToRgb(a);
@@ -263,8 +257,13 @@ function blendHex(a: string, b: string, t: number): string {
   return `#${r}${g}${bl}`;
 }
 
-function renderSeparator(current: RenderSegment, next: RenderSegment): string {
-  const sep = separatorGlyph(current, next);
+function renderSeparator(
+  current: RenderSegment,
+  next: RenderSegment,
+  powerlineGlyph: string = POWERLINE_GLYPH,
+  env: typeof process.env = process.env,
+): string {
+  const sep = separatorGlyph(current, next, powerlineGlyph, env);
 
   if (current.id === "directory" && next.id === "directory") {
     const sepColor = blendHex(current.color.fg, current.color.bg, 0.45);
@@ -298,7 +297,7 @@ function renderPowerlineRow(
 
       if (next) {
         if (shouldRenderSeparator(current, next, options)) {
-          out += renderSeparator(current, next);
+          out += renderSeparator(current, next, POWERLINE_GLYPH, process.env);
         }
       } else {
         out += `${fg(current.color.bg)}${POWERLINE_GLYPH}${RESET}`;
@@ -327,8 +326,8 @@ function renderPowerlineRow(
     usedWidth += visibleWidth(content);
 
     if (shouldRenderSeparator(current, next, options)) {
-      const sep = separatorGlyph(current, next);
-      out += renderSeparator(current, next);
+      const sep = separatorGlyph(current, next, POWERLINE_GLYPH, process.env);
+      out += renderSeparator(current, next, POWERLINE_GLYPH, process.env);
       usedWidth += visibleWidth(sep);
     }
   }
@@ -372,15 +371,17 @@ function renderPowerlineRow(
     const unfilledBg = options.fillLastUnusedBg ?? last.color.bg;
     const showUsedFreeBoundary = fillWidth > 0 && fillWidth < lastAreaWidth;
 
+    const boundaryGlyph = fillBoundaryGlyph(POWERLINE_GLYPH, process.env);
+
     if (showUsedFreeBoundary) {
-      unfilledPart = trimLeadingVisibleWidth(unfilledPart, visibleWidth("◤"));
+      unfilledPart = trimLeadingVisibleWidth(unfilledPart, visibleWidth(boundaryGlyph));
     }
 
     if (filledPart.length > 0) {
       out += `${fg(last.color.fg)}${bg(last.color.bg)}${filledPart}${RESET}`;
     }
     if (showUsedFreeBoundary) {
-      out += `${fg(last.color.bg)}${bg(unfilledBg)}◤${RESET}`;
+      out += `${fg(last.color.bg)}${bg(unfilledBg)}${boundaryGlyph}${RESET}`;
     }
     if (unfilledPart.length > 0) {
       out += `${fg(last.color.fg)}${bg(unfilledBg)}${unfilledPart}${RESET}`;
@@ -593,7 +594,7 @@ function estimateFillLastRemainingWidth(
     usedWidth += visibleWidth(` ${current.text} `);
 
     if (shouldRenderSeparator(current, next, options)) {
-      usedWidth += visibleWidth(separatorGlyph(current, next));
+      usedWidth += visibleWidth(separatorGlyph(current, next, POWERLINE_GLYPH, process.env));
     }
   }
 

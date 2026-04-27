@@ -59,4 +59,5 @@ export POWERLINE_NERD_FONTS=0
 This switches separators to ASCII (`>`).
 - The footer is enabled by default when the extension loads.
 - If the context segment would take less than a quarter of the available width, the model provider label is abbreviated to preserve space for context.
+- In VS Code terminals, the model/context transition falls back to the standard powerline glyph to avoid the clipped triangle seam; ASCII fallback (`POWERLINE_NERD_FONTS=0`) uses the same safer separator.
 - Theme JSONs are still provided so you can also pick `claude-powerline-*` in `/settings`.
