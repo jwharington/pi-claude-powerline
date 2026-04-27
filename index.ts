@@ -405,7 +405,7 @@ type FooterSegment = {
   text: string;
   color: SegmentColor;
   group: number;
-  kind: "extension" | "manager";
+  kind: "extension" | "manager" | "thinking";
 };
 
 function renderFooterSeparator(current: FooterSegment, next: FooterSegment): string {
@@ -697,35 +697,40 @@ function abbreviateProviderName(name: string, maxWidth = 4): string {
   return truncateToWidth(clean, maxWidth, "…");
 }
 
-function formatModelText(model: string, provider: string | undefined, thinkingLevel: string, abbreviateProvider = false): string {
-  if (provider) {
-    const providerText = abbreviateProvider ? abbreviateProviderName(provider) : provider;
-    return `✱ (${providerText}) ${model} • ${thinkingLevel}`;
-  }
+function abbreviateModelName(name: string, maxWidth = 18): string {
+  const clean = sanitizeStatusText(name);
+  if (!clean) return "";
+  if (visibleWidth(clean) <= maxWidth) return clean;
 
-  return `✱ ${model} • ${thinkingLevel}`;
+  return truncateToVisibleWidthFromEnd(clean, maxWidth, "…");
 }
 
-function estimateFillLastRemainingWidth(
-  segments: RenderSegment[],
-  width: number,
-  options?: { omitSeparators?: string[] },
-): number {
-  if (segments.length === 0) return width;
+function formatModelText(
+  model: string,
+  provider: string | undefined,
+  maxWidth = 18,
+): string {
+  const prefix = "✱ ";
 
-  let usedWidth = 0;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const current = segments[i]!;
-    const next = segments[i + 1]!;
-
-    usedWidth += visibleWidth(` ${current.text} `);
-
-    if (shouldRenderSeparator(current, next, options)) {
-      usedWidth += visibleWidth(separatorGlyph(current, next, POWERLINE_GLYPH, process.env));
-    }
+  if (provider) {
+    const providerBudget = Math.max(1, Math.floor(maxWidth / 4));
+    const providerText = abbreviateProviderName(provider, providerBudget);
+    const fixedWidth = visibleWidth(prefix) + visibleWidth(`(${providerText}) `);
+    const modelBudget = Math.max(1, maxWidth - fixedWidth);
+    const modelText = abbreviateModelName(model, modelBudget);
+    const text = `${prefix}(${providerText}) ${modelText}`;
+    return visibleWidth(text) <= maxWidth ? text : truncateToVisibleWidthFromEnd(text, maxWidth, "…");
   }
 
-  return Math.max(0, width - usedWidth);
+  const modelBudget = Math.max(1, maxWidth - visibleWidth(prefix));
+  const modelText = abbreviateModelName(model, modelBudget);
+  const text = `${prefix}${modelText}`;
+  return visibleWidth(text) <= maxWidth ? text : truncateToVisibleWidthFromEnd(text, maxWidth, "…");
+}
+
+function formatThinkingLevelText(thinkingLevel: string): string {
+  const clean = sanitizeStatusText(thinkingLevel) || "off";
+  return `🧠 ${clean}`;
 }
 
 function frameWithBorderRails(content: string, width: number, rail: (text: string) => string): string {
@@ -1017,15 +1022,22 @@ export default function (pi: ExtensionAPI) {
         const sessionNameRaw = pi.getSessionName?.() ?? "";
         const sessionName = abbreviateSessionName(sessionNameRaw);
         const hasSession = sessionName.length > 0;
+        const thinkingLevel = resolveThinkingLevel(ctx);
+        const thinkingText = formatThinkingLevelText(thinkingLevel);
 
-        if (footerSegments.length === 0 && !hasSession) return [];
+        footerSegments.push({
+          text: thinkingText,
+          color: { bg: "#1f2937", fg: currentTheme.context.fg },
+          group: footerSegments.length,
+          kind: "thinking",
+        });
 
         const sessionSegment = hasSession
           ? `${fg(currentTheme.session.fg)}${bg(currentTheme.session.bg)} § ${sessionName} ${RESET}`
           : "";
         const sessionSegmentWidth = hasSession ? visibleWidth(` § ${sessionName} `) : 0;
 
-        const sessionSeparator = (hasSession && footerSegments.length > 0)
+        const sessionSeparator = hasSession
           ? `${fg(currentTheme.session.bg)}${bg(footerSegments[0]!.color.bg)}${POWERLINE_GLYPH}${RESET}`
           : "";
         const sessionSeparatorWidth = sessionSeparator.length > 0 ? visibleWidth(POWERLINE_GLYPH) : 0;
@@ -1033,9 +1045,7 @@ export default function (pi: ExtensionAPI) {
         const railColor = getPromptBorderColorFn(ctx, uiTheme);
         const innerWidth = Math.max(0, width - 2);
         const rightWidth = Math.max(0, innerWidth - sessionSegmentWidth - sessionSeparatorWidth);
-        const rightAlignedPowerline = footerSegments.length > 0
-          ? renderReversePowerlineRow(footerSegments, rightWidth, { fillLeft: hasSession })
-          : " ".repeat(rightWidth);
+        const rightAlignedPowerline = renderReversePowerlineRow(footerSegments, rightWidth, { fillLeft: hasSession });
 
         const composed = `${sessionSegment}${sessionSeparator}${rightAlignedPowerline}`;
         return [frameWithBorderRails(composed, width, railColor)];
@@ -1058,7 +1068,6 @@ export default function (pi: ExtensionAPI) {
             const innerWidth = Math.max(0, width - 2);
             const model = ctx.model?.id ?? "no-model";
             const provider = ctx.model?.provider;
-            const thinkingLevel = resolveThinkingLevel(ctx);
             const usage = getUsageStats(ctx);
             const contextUsage = ctx.getContextUsage?.();
             const contextPercent = contextUsage?.percent;
@@ -1070,6 +1079,8 @@ export default function (pi: ExtensionAPI) {
             const tmuxLabel = parseTmuxLabel();
             const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
             const prefixBudget = Math.floor(innerWidth / 4);
+            const sessionTextBudget = Math.max(1, Math.floor(innerWidth / 4));
+            const modelTextBudget = Math.max(1, Math.floor(innerWidth / 4));
             const cwdSource = ctx.cwd || process.cwd();
             const prefixLayout = segmentVisibility.git
               ? fitPathAndGitPrefix(cwdSource, gitBranch, prefixBudget, dirIcon)
@@ -1077,8 +1088,8 @@ export default function (pi: ExtensionAPI) {
             const cwdPath = prefixLayout.path;
             const gitLabel = prefixLayout.gitLabel;
             const dirParts = cwdPath.length > 0 ? splitPathForPowerline(cwdPath) : [];
-            const buildSegments = (abbreviateProvider = false): RenderSegment[] => {
-              const modelText = formatModelText(model, provider, thinkingLevel, abbreviateProvider);
+            const buildSegments = (): RenderSegment[] => {
+              const modelText = formatModelText(model, provider, modelTextBudget);
               const parts: RenderSegment[] = [];
 
               if (segmentVisibility.directory) {
@@ -1112,16 +1123,7 @@ export default function (pi: ExtensionAPI) {
               return parts;
             };
 
-            const sessionTextBudget = Math.max(1, Math.floor(innerWidth / 4));
-            const defaultSegments = buildSegments(false);
-            const contextRemaining = segmentVisibility.context
-              ? estimateFillLastRemainingWidth(defaultSegments, innerWidth, { omitSeparators: ["git:model"] })
-              : innerWidth;
-            const shouldAbbreviateProvider = segmentVisibility.context
-              && typeof provider === "string"
-              && provider.length > 0
-              && contextRemaining < innerWidth / 4;
-            const segments = shouldAbbreviateProvider ? buildSegments(true) : defaultSegments;
+            const segments = buildSegments();
 
             const contextRatio = segmentVisibility.context
               ? (typeof contextPercent === "number" && Number.isFinite(contextPercent) ? contextPercent / 100 : 0)
