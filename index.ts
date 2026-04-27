@@ -471,6 +471,30 @@ function parseEnvLabel(): string | null {
   return value ? String(value) : null;
 }
 
+function truncateToVisibleWidthFromEnd(text: string, maxWidth: number, ellipsis = "…"): string {
+  if (maxWidth <= 0) return "";
+  if (visibleWidth(text) <= maxWidth) return text;
+
+  const chars = Array.from(text);
+  const tail: string[] = [];
+  let widthSoFar = 0;
+  const ellipsisWidth = visibleWidth(ellipsis);
+
+  for (let i = chars.length - 1; i >= 0; i -= 1) {
+    const char = chars[i] ?? "";
+    const charWidth = visibleWidth(char);
+    if (widthSoFar + charWidth + ellipsisWidth > maxWidth) break;
+    tail.unshift(char);
+    widthSoFar += charWidth;
+  }
+
+  if (tail.length === 0) {
+    return truncateToWidth(text, maxWidth, ellipsis);
+  }
+
+  return `${ellipsis}${tail.join("")}`;
+}
+
 function formatPathAbbreviated(pwd: string, maxWidth = 54): string {
   let path = pwd;
   const home = process.env.HOME || process.env.USERPROFILE;
@@ -484,7 +508,7 @@ function formatPathAbbreviated(pwd: string, maxWidth = 54): string {
   }
 
   if (visibleWidth(path) > maxWidth) {
-    path = truncateToWidth(path, maxWidth, "…");
+    path = truncateToVisibleWidthFromEnd(path, maxWidth, "…");
   }
 
   return path;
@@ -629,6 +653,32 @@ function abbreviateSessionName(name: string, maxWidth = 18): string {
   }
 
   return truncateToWidth(clean, maxWidth, "…");
+}
+
+function formatSessionUsageText(
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; sessionCost: number },
+  maxWidth: number,
+): string {
+  const input = fmtTokens(usage.input);
+  const output = fmtTokens(usage.output);
+  const cacheRead = fmtTokens(usage.cacheRead);
+  const cacheWrite = fmtTokens(usage.cacheWrite);
+  const cost = fmtCost(usage.sessionCost);
+
+  const candidates = [
+    `§ ↑${input} ↓${output} R${cacheRead} W${cacheWrite} ${cost}`,
+    `§ I${input} O${output} R${cacheRead} W${cacheWrite} ${cost}`,
+    `§ ${input}/${output} R${cacheRead} W${cacheWrite} ${cost}`,
+    `§ ${input}/${output} ${cost}`,
+    `§ ${fmtTokens(usage.input + usage.output)} ${cost}`,
+    `§ ${cost}`,
+  ];
+
+  for (const candidate of candidates) {
+    if (visibleWidth(candidate) <= maxWidth) return candidate;
+  }
+
+  return truncateToWidth(candidates[candidates.length - 1] ?? "§", maxWidth, "…");
 }
 
 function abbreviateProviderName(name: string, maxWidth = 4): string {
@@ -1041,7 +1091,7 @@ export default function (pi: ExtensionAPI) {
               if (segmentVisibility.session) {
                 parts.push({
                   id: "session",
-                  text: `§ ↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)} R${fmtTokens(usage.cacheRead)} W${fmtTokens(usage.cacheWrite)} ${fmtCost(usage.sessionCost)}`,
+                  text: formatSessionUsageText(usage, sessionTextBudget),
                   color: currentTheme.session,
                 });
               }
@@ -1062,6 +1112,7 @@ export default function (pi: ExtensionAPI) {
               return parts;
             };
 
+            const sessionTextBudget = Math.max(1, Math.floor(innerWidth / 4));
             const defaultSegments = buildSegments(false);
             const contextRemaining = segmentVisibility.context
               ? estimateFillLastRemainingWidth(defaultSegments, innerWidth, { omitSeparators: ["git:model"] })
