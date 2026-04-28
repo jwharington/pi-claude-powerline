@@ -5,6 +5,8 @@ import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { fillBoundaryGlyph, separatorGlyph } from "./powerline-glyphs.ts";
+import { chooseSessionNameForFooter, type FooterSessionCandidate } from "./footer-session-name.ts";
+import { measureFooterContentWidth } from "./footer-width.ts";
 
 const WIDGET_KEY = "claude-powerline-bar";
 let latestEditorBorderColor: ((text: string) => string) | null = null;
@@ -653,20 +655,27 @@ function sanitizeStatusText(text: string): string {
     .trim();
 }
 
-function abbreviateSessionName(name: string, maxWidth = 18): string {
+function buildSessionNameCandidates(name: string, maxWidth = 18): FooterSessionCandidate[] {
   const clean = sanitizeStatusText(name);
-  if (!clean) return "";
-  if (visibleWidth(clean) <= maxWidth) return clean;
+  if (!clean) return [];
 
+  const candidates: string[] = [clean];
   const words = clean.split(/\s+/).filter(Boolean);
   if (words.length > 1) {
     const initials = words.map((word) => word[0]).join("");
-    if (visibleWidth(initials) <= maxWidth) {
-      return initials;
+    if (visibleWidth(initials) <= maxWidth && initials !== clean) {
+      candidates.push(initials);
     }
   }
 
-  return truncateToWidth(clean, maxWidth, "…");
+  if (visibleWidth(clean) > maxWidth) {
+    const truncated = truncateToWidth(clean, maxWidth, "…");
+    if (truncated !== clean && !candidates.includes(truncated)) {
+      candidates.push(truncated);
+    }
+  }
+
+  return candidates.map((text) => ({ text, width: visibleWidth(` § ${text} `) }));
 }
 
 function formatSessionUsageText(
@@ -1034,7 +1043,6 @@ export default function (pi: ExtensionAPI) {
         }
 
         const sessionNameRaw = pi.getSessionName?.() ?? "";
-        const sessionName = abbreviateSessionName(sessionNameRaw) || "<anon>";
         const hasSession = true;
         const thinkingLevel = resolveThinkingLevel(ctx);
         const thinkingText = formatThinkingLevelText(thinkingLevel);
@@ -1046,11 +1054,6 @@ export default function (pi: ExtensionAPI) {
           kind: "thinking",
         });
 
-        const sessionSegment = hasSession
-          ? `${fg(currentTheme.session.fg)}${bg(currentTheme.session.bg)} § ${sessionName} ${RESET}`
-          : "";
-        const sessionSegmentWidth = hasSession ? visibleWidth(` § ${sessionName} `) : 0;
-
         const sessionSeparator = hasSession
           ? renderFooterSessionTransition(currentTheme.session.bg, footerSegments[0]!.color.bg)
           : "";
@@ -1058,7 +1061,15 @@ export default function (pi: ExtensionAPI) {
 
         const railColor = getPromptBorderColorFn(ctx, uiTheme);
         const innerWidth = Math.max(0, width - 2);
+        const footerSegmentWidths = footerSegments.map((segment) => visibleWidth(` ${segment.text} `));
+        const footerContentWidth = measureFooterContentWidth(footerSegmentWidths);
+        const sessionCandidates = buildSessionNameCandidates(sessionNameRaw);
+        const sessionName = chooseSessionNameForFooter(sessionCandidates, footerContentWidth, innerWidth, sessionSeparatorWidth) || "<anon>";
+        const sessionSegmentWidth = hasSession ? visibleWidth(` § ${sessionName} `) : 0;
         const rightWidth = Math.max(0, innerWidth - sessionSegmentWidth - sessionSeparatorWidth);
+        const sessionSegment = hasSession
+          ? `${fg(currentTheme.session.fg)}${bg(currentTheme.session.bg)} § ${sessionName} ${RESET}`
+          : "";
         const rightAlignedPowerline = renderReversePowerlineRow(footerSegments, rightWidth, { fillLeft: hasSession });
 
         const composed = `${sessionSegment}${sessionSeparator}${rightAlignedPowerline}`;

@@ -14,6 +14,8 @@
   "license": "MIT",
   "files": [
     "index.ts",
+    "footer-session-name.ts",
+    "footer-width.ts",
     "powerline-glyphs.ts",
     "tests/*.test.ts",
     "themes/*.json",
