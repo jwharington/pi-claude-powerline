@@ -306,7 +306,7 @@ function renderPowerlineRow(
       }
     }
 
-    return truncateToWidth(`${out} `, width);
+    return preserveTrailingEllipsisStyle(truncateToWidth(`${out} `, width));
   };
 
   if (!options?.fillLast || segments.length < 1) {
@@ -392,7 +392,7 @@ function renderPowerlineRow(
     if (!options?.omitLastGlyph) {
       out += `${fg(last.color.bg)}${POWERLINE_GLYPH}${RESET}`;
     }
-    return truncateToWidth(out, width);
+    return preserveTrailingEllipsisStyle(truncateToWidth(out, width));
   }
 
   out += `${fg(last.color.fg)}${bg(last.color.bg)}${lastContent}${RESET}`;
@@ -400,7 +400,7 @@ function renderPowerlineRow(
     out += `${fg(last.color.bg)}${POWERLINE_GLYPH}${RESET}`;
   }
 
-  return truncateToWidth(out, width);
+  return preserveTrailingEllipsisStyle(truncateToWidth(out, width));
 }
 
 type FooterSegment = {
@@ -456,7 +456,7 @@ function renderReversePowerlineRow(
     }
   }
 
-  const row = truncateToWidth(out, width);
+  const row = preserveTrailingEllipsisStyle(truncateToWidth(out, width));
   const pad = Math.max(0, width - visibleWidth(row));
   if (pad <= 0) return row;
 
