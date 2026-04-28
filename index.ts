@@ -7,6 +7,7 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { fillBoundaryGlyph, separatorGlyph } from "./powerline-glyphs.ts";
 import { chooseSessionNameForFooter, type FooterSessionCandidate } from "./footer-session-name.ts";
 import { measureFooterContentWidth } from "./footer-width.ts";
+import { preserveTrailingEllipsisStyle } from "./ansi-truncation.ts";
 
 const WIDGET_KEY = "claude-powerline-bar";
 let latestEditorBorderColor: ((text: string) => string) | null = null;
