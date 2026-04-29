@@ -17,6 +17,8 @@
     "footer-session-name.ts",
     "footer-width.ts",
     "ansi-truncation.ts",
+    "context-glyph.ts",
+    "context-metrics.ts",
     "powerline-glyphs.ts",
     "tests/*.test.ts",
     "themes/*.json",

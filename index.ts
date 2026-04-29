@@ -4,10 +4,12 @@ import { dirname, join } from "node:path";
 import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { fillBoundaryGlyph, separatorGlyph } from "./powerline-glyphs.ts";
+import { separatorGlyph } from "./powerline-glyphs.ts";
 import { chooseSessionNameForFooter, type FooterSessionCandidate } from "./footer-session-name.ts";
 import { measureFooterContentWidth } from "./footer-width.ts";
-import { preserveTrailingEllipsisStyle } from "./ansi-truncation.ts";
+import { colorizeTrailingEllipsis, preserveTrailingEllipsisStyle } from "./ansi-truncation.ts";
+import { chooseContextGlyph } from "./context-glyph.ts";
+import { estimatePromptTokens } from "./context-metrics.ts";
 
 const WIDGET_KEY = "claude-powerline-bar";
 let latestEditorBorderColor: ((text: string) => string) | null = null;
@@ -135,6 +137,62 @@ const THEMES: Record<ThemeName, ColorTheme> = {
     tmux: { bg: "#282828", fg: "#fe8019" },
   },
 };
+
+function thinkingOverlayBg(themeName: ThemeName, level: string): string {
+  const normalized = level.toLowerCase();
+  const palette: Record<ThemeName, Record<string, string>> = {
+    dark: {
+      off: "#404040",
+      minimal: "#3a3a4a",
+      low: "#8b4513",
+      medium: "#4a5568",
+      high: "#92400e",
+      xhigh: "#991b1b",
+    },
+    light: {
+      off: "#4fb3d9",
+      minimal: "#8b7dd8",
+      low: "#ff6b47",
+      medium: "#718096",
+      high: "#d97706",
+      xhigh: "#dc2626",
+    },
+    nord: {
+      off: "#3b4252",
+      minimal: "#434c5e",
+      low: "#434c5e",
+      medium: "#5e81ac",
+      high: "#d08770",
+      xhigh: "#bf616a",
+    },
+    "tokyo-night": {
+      off: "#1e2030",
+      minimal: "#292e42",
+      low: "#2f334d",
+      medium: "#414868",
+      high: "#ff9e64",
+      xhigh: "#f7768e",
+    },
+    "rose-pine": {
+      off: "#1f1d2e",
+      minimal: "#2a273f",
+      low: "#26233a",
+      medium: "#393552",
+      high: "#ebbcba",
+      xhigh: "#eb6f92",
+    },
+    gruvbox: {
+      off: "#3c3836",
+      minimal: "#504945",
+      low: "#504945",
+      medium: "#458588",
+      high: "#d79921",
+      xhigh: "#cc241d",
+    },
+  };
+
+  return palette[themeName][normalized] ?? palette[themeName].off;
+}
 
 const RESET = "\u001b[0m";
 const POWERLINE_GLYPH = process.env.POWERLINE_NERD_FONTS === "0" ? ">" : "\uE0B0";
@@ -282,6 +340,8 @@ function renderPowerlineRow(
   options?: {
     fillLast?: boolean;
     fillLastRatio?: number;
+    fillLastOverlayRatio?: number;
+    fillLastOverlayBg?: string;
     fillLastUnusedBg?: string;
     omitLastGlyph?: boolean;
     rightAlignLastText?: boolean;
@@ -344,51 +404,77 @@ function renderPowerlineRow(
     return renderDefault();
   }
 
+  const boundaryWidth = 1;
   const lastAreaWidth = remaining - glyphWidth;
-  const baseLastContent = ` ${last.text} `;
+  const contentAreaWidth = Math.max(0, lastAreaWidth - boundaryWidth);
+  const maxLastTextWidth = Math.max(0, contentAreaWidth - 2);
+  const clippedLastText = truncateToWidth(last.text, maxLastTextWidth, "");
+  const baseLastContent = ` ${clippedLastText} `;
   const baseLastContentWidth = visibleWidth(baseLastContent);
-  const paddingWidth = Math.max(0, lastAreaWidth - baseLastContentWidth);
+  const paddingWidth = Math.max(0, contentAreaWidth - baseLastContentWidth);
   const lastContent = options?.rightAlignLastText
     ? `${" ".repeat(paddingWidth)}${baseLastContent}`
-    : ` ${last.text}${" ".repeat(Math.max(0, lastAreaWidth - (lastTextWidth + 2)))} `;
+    : ` ${clippedLastText}${" ".repeat(Math.max(0, contentAreaWidth - (visibleWidth(clippedLastText) + 2)))} `;
 
   if (typeof options?.fillLastRatio === "number" && Number.isFinite(options.fillLastRatio)) {
     const ratio = Math.max(0, Math.min(1, options.fillLastRatio));
-    const fillWidth = Math.max(0, Math.min(lastAreaWidth, Math.round(lastAreaWidth * ratio)));
+    const fillWidth = Math.max(0, Math.min(contentAreaWidth, Math.round(contentAreaWidth * ratio)));
+    const overlayRatio = typeof options.fillLastOverlayRatio === "number" && Number.isFinite(options.fillLastOverlayRatio)
+      ? Math.max(0, Math.min(1, options.fillLastOverlayRatio))
+      : 0;
+    const overlayWidth = Math.max(0, Math.min(fillWidth, Math.round(fillWidth * overlayRatio)));
 
-    const chars = Array.from(lastContent);
-    let splitIndex = chars.length;
-    let widthSoFar = 0;
-    for (let i = 0; i < chars.length; i += 1) {
-      const w = visibleWidth(chars[i] ?? "");
-      if (widthSoFar + w > fillWidth) {
-        splitIndex = i;
-        break;
-      }
-      widthSoFar += w;
-      splitIndex = i + 1;
-    }
-
-    const filledPart = chars.slice(0, splitIndex).join("");
-    let unfilledPart = chars.slice(splitIndex).join("");
     const unfilledBg = options.fillLastUnusedBg ?? last.color.bg;
-    const showUsedFreeBoundary = fillWidth > 0 && fillWidth < lastAreaWidth;
+    const overlayBg = options.fillLastOverlayBg ?? last.color.bg;
+    const boundaryGlyph = "│";
 
-    const boundaryGlyph = fillBoundaryGlyph(POWERLINE_GLYPH, process.env);
+    const contentChars = Array.from(lastContent);
+    let widthSoFar = 0;
+    let currentBg: string | null = null;
+    let currentChunk = "";
+    let boundaryInserted = false;
 
-    if (showUsedFreeBoundary) {
-      unfilledPart = trimLeadingVisibleWidth(unfilledPart, visibleWidth(boundaryGlyph));
+    const flushChunk = () => {
+      if (!currentChunk || !currentBg) return;
+      out += `${fg(last.color.fg)}${bg(currentBg)}${currentChunk}${RESET}`;
+      currentChunk = "";
+    };
+
+    const insertBoundary = () => {
+      if (boundaryInserted) return;
+      flushChunk();
+      out += `${fg(last.color.fg)}${bg(overlayBg)}${boundaryGlyph}${RESET}`;
+      boundaryInserted = true;
+      currentBg = null;
+    };
+
+    for (const char of contentChars) {
+      if (!boundaryInserted && widthSoFar >= overlayWidth) {
+        insertBoundary();
+      }
+
+      const charWidth = visibleWidth(char);
+      const charStart = widthSoFar;
+      const charEnd = widthSoFar + charWidth;
+      widthSoFar = charEnd;
+
+      let charBg = unfilledBg;
+      if (charStart < overlayWidth) {
+        charBg = overlayBg;
+      } else if (charStart < fillWidth) {
+        charBg = last.color.bg;
+      }
+
+      if (charBg !== currentBg) {
+        flushChunk();
+        currentBg = charBg;
+      }
+
+      currentChunk += char;
     }
 
-    if (filledPart.length > 0) {
-      out += `${fg(last.color.fg)}${bg(last.color.bg)}${filledPart}${RESET}`;
-    }
-    if (showUsedFreeBoundary) {
-      out += `${fg(last.color.bg)}${bg(unfilledBg)}${boundaryGlyph}${RESET}`;
-    }
-    if (unfilledPart.length > 0) {
-      out += `${fg(last.color.fg)}${bg(unfilledBg)}${unfilledPart}${RESET}`;
-    }
+    insertBoundary();
+    flushChunk();
 
     if (!options?.omitLastGlyph) {
       out += `${fg(last.color.bg)}${POWERLINE_GLYPH}${RESET}`;
@@ -488,7 +574,7 @@ function parseEnvLabel(): string | null {
   return value ? String(value) : null;
 }
 
-function truncateToVisibleWidthFromEnd(text: string, maxWidth: number, ellipsis = "…"): string {
+function truncateToVisibleWidthFromEnd(text: string, maxWidth: number, ellipsis = "…", ellipsisStyle?: string): string {
   if (maxWidth <= 0) return "";
   if (visibleWidth(text) <= maxWidth) return text;
 
@@ -506,13 +592,14 @@ function truncateToVisibleWidthFromEnd(text: string, maxWidth: number, ellipsis 
   }
 
   if (tail.length === 0) {
-    return truncateToWidth(text, maxWidth, ellipsis);
+    const truncated = truncateToWidth(text, maxWidth, ellipsis);
+    return ellipsisStyle ? colorizeTrailingEllipsis(truncated, fg(ellipsisStyle)) : truncated;
   }
 
-  return `${ellipsis}${tail.join("")}`;
+  return ellipsisStyle ? `${fg(ellipsisStyle)}${ellipsis}${tail.join("")}` : `${ellipsis}${tail.join("")}`;
 }
 
-function formatPathAbbreviated(pwd: string, maxWidth = 54): string {
+function formatPathAbbreviated(pwd: string, maxWidth = 54, ellipsisStyle?: string): string {
   let path = pwd;
   const home = process.env.HOME || process.env.USERPROFILE;
 
@@ -525,13 +612,13 @@ function formatPathAbbreviated(pwd: string, maxWidth = 54): string {
   }
 
   if (visibleWidth(path) > maxWidth) {
-    path = truncateToVisibleWidthFromEnd(path, maxWidth, "…");
+    path = truncateToVisibleWidthFromEnd(path, maxWidth, "…", ellipsisStyle);
   }
 
   return path;
 }
 
-function abbreviateGitLabel(name: string, maxWidth = 18): string {
+export function abbreviateGitLabel(name: string, maxWidth = 18): string {
   const clean = sanitizeStatusText(name);
   if (!clean) return "";
   if (visibleWidth(clean) <= maxWidth) return clean;
@@ -544,7 +631,7 @@ function abbreviateGitLabel(name: string, maxWidth = 18): string {
     }
   }
 
-  return truncateToWidth(clean, maxWidth, "…");
+  return truncateToWidth(clean, maxWidth, "");
 }
 
 function directoryPrefixWidth(pathText: string, dirIcon: string): number {
@@ -563,7 +650,7 @@ function directoryPrefixWidth(pathText: string, dirIcon: string): number {
   return width;
 }
 
-function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: number, dirIcon: string): {
+function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: number, dirIcon: string, pathEllipsisStyle?: string): {
   path: string;
   gitLabel: string;
 } {
@@ -572,16 +659,16 @@ function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: numb
     return { path: "", gitLabel: "" };
   }
 
-  const normalizedPath = formatPathAbbreviated(pwd, Number.MAX_SAFE_INTEGER);
+  const normalizedPath = formatPathAbbreviated(pwd, Number.MAX_SAFE_INTEGER, pathEllipsisStyle);
   const maxPathWidth = Math.max(1, visibleWidth(normalizedPath));
 
   let lo = 1;
   let hi = maxPathWidth;
-  let bestPath = formatPathAbbreviated(pwd, 1);
+  let bestPath = formatPathAbbreviated(pwd, 1, pathEllipsisStyle);
   let bestGitLabel = abbreviateGitLabel(gitSource, 0);
 
   const fits = (pathWidth: number): { ok: boolean; path: string; gitLabel: string } => {
-    const path = formatPathAbbreviated(pwd, pathWidth);
+    const path = formatPathAbbreviated(pwd, pathWidth, pathEllipsisStyle);
     const pathRenderedWidth = directoryPrefixWidth(path, dirIcon);
     const separatorWidth = pathRenderedWidth > 0 ? visibleWidth("") : 0;
     const availableForGitSegment = budget - pathRenderedWidth - separatorWidth;
@@ -1055,6 +1142,16 @@ export default function (pi: ExtensionAPI) {
           kind: "thinking",
         });
 
+        if (process.env.CLAUDE_POWERLINE_DEBUG_SYSTEM_PROMPT === "1") {
+          const prompt = ctx.getSystemPrompt?.() ?? "";
+          footerSegments.push({
+            text: `sys ${estimatePromptTokens(prompt)}t`,
+            color: { bg: "#111827", fg: currentTheme.today.fg },
+            group: footerSegments.length,
+            kind: "manager",
+          });
+        }
+
         const sessionSeparator = hasSession
           ? renderFooterSessionTransition(currentTheme.session.bg, footerSegments[0]!.color.bg)
           : "";
@@ -1098,9 +1195,17 @@ export default function (pi: ExtensionAPI) {
             const contextUsage = ctx.getContextUsage?.();
             const contextPercent = contextUsage?.percent;
             const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
+            const contextGlyph = chooseContextGlyph(contextPercent);
             const contextText = typeof contextPercent === "number"
-              ? `◔ ${contextPercent.toFixed(1)}%/${fmtTokens(contextWindow)}`
-              : `◔ ?/${fmtTokens(contextWindow)}`;
+              ? `${contextGlyph} ${Math.round(contextPercent)}%/${fmtTokens(contextWindow)}`
+              : `${contextGlyph} ?/${fmtTokens(contextWindow)}`;
+            const systemPromptText = ctx.getSystemPrompt?.() ?? "";
+            const systemPromptTokens = estimatePromptTokens(systemPromptText);
+            const systemPromptRatio = typeof contextUsage?.tokens === "number" && Number.isFinite(contextUsage.tokens) && contextUsage.tokens > 0
+              ? Math.max(0, Math.min(1, systemPromptTokens / contextUsage.tokens))
+              : 0;
+            const thinkingLevel = resolveThinkingLevel(ctx);
+            const systemPromptOverlayBg = thinkingOverlayBg(theme, thinkingLevel);
             const envLabel = parseEnvLabel();
             const tmuxLabel = parseTmuxLabel();
             const dirIcon = isStreaming ? (SPINNER_FRAMES[spinnerIndex] ?? "*") : "📁";
@@ -1109,8 +1214,8 @@ export default function (pi: ExtensionAPI) {
             const modelTextBudget = Math.max(1, Math.floor(innerWidth / 4));
             const cwdSource = ctx.cwd || process.cwd();
             const prefixLayout = segmentVisibility.git
-              ? fitPathAndGitPrefix(cwdSource, gitBranch, prefixBudget, dirIcon)
-              : { path: formatPathAbbreviated(cwdSource, prefixBudget), gitLabel: gitBranch || "no-git" };
+              ? fitPathAndGitPrefix(cwdSource, gitBranch, prefixBudget, dirIcon, currentTheme.directory.fg)
+              : { path: formatPathAbbreviated(cwdSource, prefixBudget, currentTheme.directory.fg), gitLabel: gitBranch || "no-git" };
             const cwdPath = prefixLayout.path;
             const gitLabel = prefixLayout.gitLabel;
             const dirParts = cwdPath.length > 0 ? splitPathForPowerline(cwdPath) : [];
@@ -1159,6 +1264,8 @@ export default function (pi: ExtensionAPI) {
             const powerline = renderPowerlineRow(segments, innerWidth, {
               fillLast: segmentVisibility.context,
               fillLastRatio: segmentVisibility.context ? contextRatio : undefined,
+              fillLastOverlayRatio: segmentVisibility.context ? systemPromptRatio : undefined,
+              fillLastOverlayBg: systemPromptOverlayBg,
               fillLastUnusedBg: "#1f2937",
               omitLastGlyph: segmentVisibility.context,
               rightAlignLastText: segmentVisibility.context,
