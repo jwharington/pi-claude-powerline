@@ -972,6 +972,14 @@ function getProjectSettingsPath(cwd: string): string {
   return join(cwd, ".pi", "settings.json");
 }
 
+function loadHideThinkingBlockSetting(cwd: string): boolean {
+  const global = readSettingsFile(getGlobalSettingsPath());
+  const project = readSettingsFile(getProjectSettingsPath(cwd));
+  const globalHide = typeof global.hideThinkingBlock === "boolean" ? global.hideThinkingBlock : undefined;
+  const projectHide = typeof project.hideThinkingBlock === "boolean" ? project.hideThinkingBlock : undefined;
+  return projectHide ?? globalHide ?? false;
+}
+
 function loadPersistedConfig(cwd: string): PersistedConfig {
   const global = readSettingsFile(getGlobalSettingsPath());
   const project = readSettingsFile(getProjectSettingsPath(cwd));
@@ -1134,10 +1142,12 @@ export default function (pi: ExtensionAPI) {
         const hasSession = true;
         const thinkingLevel = resolveThinkingLevel(ctx);
         const thinkingText = formatThinkingLevelText(thinkingLevel);
+        const thinkingHidden = loadHideThinkingBlockSetting(ctx.cwd || process.cwd());
+        const thinkingFooterFg = thinkingHidden ? "#9ca3af" : currentTheme.context.fg;
 
         footerSegments.push({
           text: thinkingText,
-          color: { bg: "#1f2937", fg: currentTheme.context.fg },
+          color: { bg: "#1f2937", fg: thinkingFooterFg },
           group: footerSegments.length,
           kind: "thinking",
         });
