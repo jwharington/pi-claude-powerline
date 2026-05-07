@@ -612,7 +612,18 @@ function formatPathAbbreviated(pwd: string, maxWidth = 54, ellipsisStyle?: strin
   }
 
   if (visibleWidth(path) > maxWidth) {
-    path = truncateToVisibleWidthFromEnd(path, maxWidth, "…", ellipsisStyle);
+    const parts = splitPathForPowerline(path);
+    const tailSource = (parts[0] === "~" || parts[0] === "/") ? parts.slice(1) : parts;
+    const segmentCandidates: string[] = [];
+
+    for (const keepCount of [2, 1]) {
+      if (tailSource.length >= keepCount) {
+        segmentCandidates.push(`…/${tailSource.slice(-keepCount).join("/")}`);
+      }
+    }
+
+    const bySegments = segmentCandidates.find((candidate) => visibleWidth(candidate) <= maxWidth);
+    path = bySegments ?? (maxWidth >= 1 ? "…" : "");
   }
 
   return path;
@@ -650,7 +661,7 @@ function directoryPrefixWidth(pathText: string, dirIcon: string): number {
   return width;
 }
 
-function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: number, dirIcon: string, pathEllipsisStyle?: string): {
+export function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: number, dirIcon: string, pathEllipsisStyle?: string): {
   path: string;
   gitLabel: string;
 } {
@@ -661,13 +672,15 @@ function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: numb
 
   const normalizedPath = formatPathAbbreviated(pwd, Number.MAX_SAFE_INTEGER, pathEllipsisStyle);
   const maxPathWidth = Math.max(1, visibleWidth(normalizedPath));
+  const fullGitLabel = abbreviateGitLabel(gitSource, Number.MAX_SAFE_INTEGER);
+  const fullGitLabelWidth = visibleWidth(fullGitLabel);
 
-  let lo = 1;
-  let hi = maxPathWidth;
-  let bestPath = formatPathAbbreviated(pwd, 1, pathEllipsisStyle);
-  let bestGitLabel = abbreviateGitLabel(gitSource, 0);
+  let bestPath = "";
+  let bestGitLabel = abbreviateGitLabel(gitSource, Math.max(0, budget - 4));
+  let bestGitWidth = visibleWidth(bestGitLabel);
+  let bestPathRenderedWidth = 0;
 
-  const fits = (pathWidth: number): { ok: boolean; path: string; gitLabel: string } => {
+  for (let pathWidth = 1; pathWidth <= maxPathWidth; pathWidth += 1) {
     const path = formatPathAbbreviated(pwd, pathWidth, pathEllipsisStyle);
     const pathRenderedWidth = directoryPrefixWidth(path, dirIcon);
     const separatorWidth = pathRenderedWidth > 0 ? visibleWidth("") : 0;
@@ -677,18 +690,22 @@ function fitPathAndGitPrefix(pwd: string, gitBranch: string | null, budget: numb
     const gitRenderedWidth = visibleWidth(` ⎇ ${gitLabel} `);
     const totalWidth = pathRenderedWidth + separatorWidth + gitRenderedWidth;
 
-    return { ok: totalWidth <= budget, path, gitLabel };
-  };
+    if (totalWidth > budget) continue;
 
-  while (lo <= hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const candidate = fits(mid);
-    if (candidate.ok) {
-      bestPath = candidate.path;
-      bestGitLabel = candidate.gitLabel;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
+    const gitWidth = visibleWidth(gitLabel);
+    const shouldReplace = gitWidth > bestGitWidth
+      || (gitWidth === bestGitWidth && pathRenderedWidth > bestPathRenderedWidth);
+
+    if (shouldReplace) {
+      bestPath = path;
+      bestGitLabel = gitLabel;
+      bestGitWidth = gitWidth;
+      bestPathRenderedWidth = pathRenderedWidth;
+
+      if (bestGitWidth >= fullGitLabelWidth) {
+        // Full branch is visible; we can now maximize path width.
+        continue;
+      }
     }
   }
 
