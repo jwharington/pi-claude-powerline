@@ -525,6 +525,120 @@ function renderFooterSessionTransition(sessionBg: string, nextBg: string): strin
   }).join("");
 }
 
+function footerSegmentsRenderedWidth(segments: FooterSegment[]): number {
+  if (segments.length === 0) return 0;
+
+  let total = 0;
+  for (let i = 0; i < segments.length; i += 1) {
+    const current = segments[i]!;
+    total += visibleWidth(` ${current.text} `);
+
+    const next = segments[i + 1];
+    if (next) {
+      total += visibleWidth(renderFooterSeparator(current, next));
+    }
+  }
+
+  return total;
+}
+
+function footerMinTextWidth(kind: FooterSegment["kind"]): number {
+  if (kind === "thinking") return 4;
+  return 1;
+}
+
+function truncatePlainTextToWidth(text: string, maxWidth: number, ellipsis = "…"): string {
+  const clean = sanitizeStatusText(text);
+  if (maxWidth <= 0) return "";
+  if (visibleWidth(clean) <= maxWidth) return clean;
+
+  const ellipsisWidth = visibleWidth(ellipsis);
+  if (ellipsisWidth >= maxWidth) {
+    return ellipsisWidth === maxWidth ? ellipsis : "";
+  }
+
+  let out = "";
+  let widthSoFar = 0;
+  for (const char of Array.from(clean)) {
+    const charWidth = visibleWidth(char);
+    if (widthSoFar + charWidth + ellipsisWidth > maxWidth) break;
+    out += char;
+    widthSoFar += charWidth;
+  }
+
+  return `${out}${ellipsis}`;
+}
+
+function footerShrinkPriority(kind: FooterSegment["kind"]): number {
+  if (kind === "extension") return 0;
+  if (kind === "manager") return 1;
+  return 2;
+}
+
+export function fitFooterSegmentsToWidth(segments: FooterSegment[], width: number): FooterSegment[] {
+  if (segments.length === 0 || width <= 0) return [];
+
+  const fitted = segments.map((segment) => ({ ...segment }));
+  let totalWidth = footerSegmentsRenderedWidth(fitted);
+  if (totalWidth <= width) return fitted;
+
+  while (totalWidth > width) {
+    let bestIndex = -1;
+    let bestPriority = Number.POSITIVE_INFINITY;
+    let bestTextWidth = -1;
+
+    for (let i = 0; i < fitted.length; i += 1) {
+      const segment = fitted[i]!;
+      const textWidth = visibleWidth(segment.text);
+      const minWidth = footerMinTextWidth(segment.kind);
+      if (textWidth <= minWidth) continue;
+
+      const priority = footerShrinkPriority(segment.kind);
+      if (
+        bestIndex === -1
+        || priority < bestPriority
+        || (priority === bestPriority && textWidth > bestTextWidth)
+      ) {
+        bestIndex = i;
+        bestPriority = priority;
+        bestTextWidth = textWidth;
+      }
+    }
+
+    if (bestIndex === -1) break;
+
+    const segment = fitted[bestIndex]!;
+    const minWidth = footerMinTextWidth(segment.kind);
+    const nextWidth = Math.max(minWidth, visibleWidth(segment.text) - 1);
+    const ellipsis = nextWidth > 1 ? "…" : "";
+    fitted[bestIndex] = {
+      ...segment,
+      text: truncatePlainTextToWidth(segment.text, nextWidth, ellipsis),
+    };
+
+    totalWidth = footerSegmentsRenderedWidth(fitted);
+  }
+
+  while (totalWidth > width && fitted.length > 1) {
+    const dropIndex = fitted.findIndex((segment) => segment.kind !== "thinking");
+    if (dropIndex < 0) break;
+    fitted.splice(dropIndex, 1);
+    totalWidth = footerSegmentsRenderedWidth(fitted);
+  }
+
+  if (totalWidth > width && fitted.length === 1) {
+    const only = fitted[0]!;
+    const maxTextWidth = Math.max(0, width - 2);
+    const ellipsis = maxTextWidth > 1 ? "…" : "";
+    fitted[0] = {
+      ...only,
+      text: truncatePlainTextToWidth(only.text, maxTextWidth, ellipsis),
+    };
+  }
+
+  return fitted;
+}
+
 function renderReversePowerlineRow(
   segments: FooterSegment[],
   width: number,
@@ -1186,7 +1300,8 @@ export default function (pi: ExtensionAPI) {
 
         const railColor = getPromptBorderColorFn(ctx, uiTheme);
         const innerWidth = Math.max(0, width - 2);
-        const footerSegmentWidths = footerSegments.map((segment) => visibleWidth(` ${segment.text} `));
+        const footerSegmentsForMeasure = fitFooterSegmentsToWidth(footerSegments, innerWidth);
+        const footerSegmentWidths = footerSegmentsForMeasure.map((segment) => visibleWidth(` ${segment.text} `));
         const footerContentWidth = measureFooterContentWidth(footerSegmentWidths);
         const sessionCandidates = buildSessionNameCandidates(sessionNameRaw);
         const sessionName = chooseSessionNameForFooter(sessionCandidates, footerContentWidth, innerWidth, sessionSeparatorWidth) || "<anon>";
@@ -1195,7 +1310,8 @@ export default function (pi: ExtensionAPI) {
         const sessionSegment = hasSession
           ? `${fg(currentTheme.session.fg)}${bg(currentTheme.session.bg)} § ${sessionName} ${RESET}`
           : "";
-        const rightAlignedPowerline = renderReversePowerlineRow(footerSegments, rightWidth, { fillLeft: hasSession });
+        const footerSegmentsFitted = fitFooterSegmentsToWidth(footerSegments, rightWidth);
+        const rightAlignedPowerline = renderReversePowerlineRow(footerSegmentsFitted, rightWidth, { fillLeft: hasSession });
 
         const composed = `${sessionSegment}${sessionSeparator}${rightAlignedPowerline}`;
         return [frameWithBorderRails(composed, width, railColor)];
