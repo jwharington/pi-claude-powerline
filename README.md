@@ -35,6 +35,7 @@ Then run `/reload` in Pi.
 - `/claude-powerline off`
 - `/claude-powerline toggle`
 - `/claude-powerline theme dark|light|nord|tokyo-night|rose-pine|gruvbox`
+- `/claude-powerline cost on|off|toggle`
 - `/claude-powerline segments list`
 - `/claude-powerline segments reset`
 - `/claude-powerline segments on today weekly env tmux`
@@ -47,6 +48,7 @@ Extra Claude-style segments now available:
 - `weekly` (7-day cost)
 - `env` (from `CLAUDE_POWERLINE_ENV`, `PI_ENV`, or `NODE_ENV`)
 - `tmux` (TMUX session indicator)
+- session cost inside the `session` segment can be toggled independently with `/claude-powerline cost ...`
 
 ## Notes
 

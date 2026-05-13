@@ -35,6 +35,7 @@ type PersistedConfig = {
   enabled?: boolean;
   theme?: ThemeName;
   segments?: Partial<SegmentVisibility>;
+  showSessionCost?: boolean;
 };
 
 const DEFAULT_SEGMENT_VISIBILITY: SegmentVisibility = {
@@ -897,9 +898,10 @@ function buildSessionNameCandidates(name: string, maxWidth = 18): FooterSessionC
   return candidates.map((text) => ({ text, width: visibleWidth(` § ${text} `) }));
 }
 
-function formatSessionUsageText(
+export function formatSessionUsageText(
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; sessionCost: number },
   maxWidth: number,
+  showSessionCost = true,
 ): string {
   const input = fmtTokens(usage.input);
   const output = fmtTokens(usage.output);
@@ -907,14 +909,22 @@ function formatSessionUsageText(
   const cacheWrite = fmtTokens(usage.cacheWrite);
   const cost = fmtCost(usage.sessionCost);
 
-  const candidates = [
-    `§ ↑${input} ↓${output} R${cacheRead} W${cacheWrite} ${cost}`,
-    `§ I${input} O${output} R${cacheRead} W${cacheWrite} ${cost}`,
-    `§ ${input}/${output} R${cacheRead} W${cacheWrite} ${cost}`,
-    `§ ${input}/${output} ${cost}`,
-    `§ ${fmtTokens(usage.input + usage.output)} ${cost}`,
-    `§ ${cost}`,
-  ];
+  const candidates = showSessionCost
+    ? [
+        `§ ↑${input} ↓${output} R${cacheRead} W${cacheWrite} ${cost}`,
+        `§ I${input} O${output} R${cacheRead} W${cacheWrite} ${cost}`,
+        `§ ${input}/${output} R${cacheRead} W${cacheWrite} ${cost}`,
+        `§ ${input}/${output} ${cost}`,
+        `§ ${fmtTokens(usage.input + usage.output)} ${cost}`,
+        `§ ${cost}`,
+      ]
+    : [
+        `§ ↑${input} ↓${output} R${cacheRead} W${cacheWrite}`,
+        `§ I${input} O${output} R${cacheRead} W${cacheWrite}`,
+        `§ ${input}/${output} R${cacheRead} W${cacheWrite}`,
+        `§ ${input}/${output}`,
+        `§ ${fmtTokens(usage.input + usage.output)}`,
+      ];
 
   for (const candidate of candidates) {
     if (visibleWidth(candidate) <= maxWidth) return candidate;
@@ -1082,6 +1092,10 @@ function parsePersistedConfig(value: unknown): PersistedConfig {
     parsed.segments = segments;
   }
 
+  if (typeof value.showSessionCost === "boolean") {
+    parsed.showSessionCost = value.showSessionCost;
+  }
+
   return parsed;
 }
 
@@ -1121,6 +1135,7 @@ function loadPersistedConfig(cwd: string): PersistedConfig {
     enabled: p.enabled ?? g.enabled,
     theme: p.theme ?? g.theme,
     segments: { ...(g.segments ?? {}), ...(p.segments ?? {}) },
+    showSessionCost: p.showSessionCost ?? g.showSessionCost,
   };
 }
 
@@ -1138,6 +1153,7 @@ function writePersistedConfig(cwd: string, config: PersistedConfig): boolean {
     enabled: config.enabled,
     theme: config.theme,
     segments: config.segments,
+    showSessionCost: config.showSessionCost,
   };
 
   try {
@@ -1176,6 +1192,7 @@ class PowerlineBorderEditor extends CustomEditor {
 export default function (pi: ExtensionAPI) {
   let enabled = true;
   let theme: ThemeName = "dark";
+  let showSessionCost = true;
   let isStreaming = false;
   let spinnerIndex = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | null = null;
@@ -1376,7 +1393,7 @@ export default function (pi: ExtensionAPI) {
               if (segmentVisibility.session) {
                 parts.push({
                   id: "session",
-                  text: formatSessionUsageText(usage, sessionTextBudget),
+                  text: formatSessionUsageText(usage, sessionTextBudget, showSessionCost),
                   color: currentTheme.session,
                 });
               }
@@ -1436,6 +1453,7 @@ export default function (pi: ExtensionAPI) {
     const persisted = loadPersistedConfig(ctx.cwd);
     if (typeof persisted.enabled === "boolean") enabled = persisted.enabled;
     if (persisted.theme) theme = persisted.theme;
+    if (typeof persisted.showSessionCost === "boolean") showSessionCost = persisted.showSessionCost;
     if (persisted.segments) {
       segmentVisibility = { ...DEFAULT_SEGMENT_VISIBILITY, ...persisted.segments };
     }
@@ -1489,7 +1507,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("claude-powerline", {
-    description: "Claude-style powerline bar: /claude-powerline [on|off|toggle|theme <name>|segments ...]",
+    description: "Claude-style powerline bar: /claude-powerline [on|off|toggle|theme <name>|cost <on|off|toggle>|segments ...]",
     handler: async (args, ctx) => {
       latestCtx = ctx;
       const input = (args ?? "").trim();
@@ -1508,6 +1526,19 @@ export default function (pi: ExtensionAPI) {
           return;
         }
         theme = next;
+        enabled = true;
+      } else if (parts[0] === "cost") {
+        const action = (parts[1] ?? "toggle").toLowerCase();
+        if (action === "on") {
+          showSessionCost = true;
+        } else if (action === "off") {
+          showSessionCost = false;
+        } else if (action === "toggle") {
+          showSessionCost = !showSessionCost;
+        } else {
+          ctx.ui.notify("Usage: /claude-powerline cost [on|off|toggle]", "info");
+          return;
+        }
         enabled = true;
       } else if (parts[0] === "segments") {
         const action = (parts[1] ?? "").toLowerCase();
@@ -1548,6 +1579,7 @@ export default function (pi: ExtensionAPI) {
           enabled,
           theme,
           segments: segmentVisibility,
+          showSessionCost,
         });
         if (!saved) {
           ctx.ui.notify("Could not persist claude-powerline settings", "warning");
@@ -1559,7 +1591,7 @@ export default function (pi: ExtensionAPI) {
         return;
       } else {
         ctx.ui.notify(
-          "Usage: /claude-powerline [on|off|toggle|theme <name>|segments <list|reset|on|off|toggle> ...]",
+          "Usage: /claude-powerline [on|off|toggle|theme <name>|cost <on|off|toggle>|segments <list|reset|on|off|toggle> ...]",
           "info",
         );
         return;
@@ -1571,6 +1603,7 @@ export default function (pi: ExtensionAPI) {
         enabled,
         theme,
         segments: segmentVisibility,
+        showSessionCost,
       });
       if (!saved) {
         ctx.ui.notify("Could not persist claude-powerline settings", "warning");
@@ -1581,7 +1614,7 @@ export default function (pi: ExtensionAPI) {
       maybeRender();
 
       if (enabled) {
-        ctx.ui.notify(`Claude powerline enabled (${theme})`, "info");
+        ctx.ui.notify(`Claude powerline enabled (${theme})${showSessionCost ? " · cost on" : " · cost off"}`, "info");
       } else {
         ctx.ui.notify("Claude powerline disabled", "info");
       }
