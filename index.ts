@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { separatorGlyph } from "./powerline-glyphs.ts";
 import { chooseSessionNameForFooter, type FooterSessionCandidate } from "./footer-session-name.ts";
 import { measureFooterContentWidth } from "./footer-width.ts";
@@ -875,6 +875,36 @@ function sanitizeStatusText(text: string): string {
     .trim();
 }
 
+/**
+ * Reformat the @tintinweb/pi-subagents status text ("2 running, 1 queued agents")
+ * into a compact robot glyph + count, e.g. "🤖 2 +1". Returns null when the text
+ * does not look like a subagents status.
+ */
+export function formatSubagentFooterText(text: string): string | null {
+  const runningMatch = text.match(/(\d+)\s+running/);
+  const queuedMatch = text.match(/(\d+)\s+queued/);
+  const running = runningMatch ? Number(runningMatch[1]) : 0;
+  const queued = queuedMatch ? Number(queuedMatch[1]) : 0;
+  if (running === 0 && queued === 0) return null;
+
+  let out = "🤖";
+  if (running > 0) out += ` ${running}`;
+  if (queued > 0) out += ` +${queued}`;
+  return out;
+}
+
+/**
+ * Reformat the pi-mcp-adapter status text ("MCP: 0/9 servers") into a compact
+ * plug glyph + connected count, e.g. "🔌 9". Returns null when the text does not
+ * look like an MCP server status.
+ */
+export function formatMcpFooterText(text: string): string | null {
+  const match = text.match(/MCP:\s*(\d+)\/(\d+)\s*servers/i);
+  if (!match) return null;
+  const connected = Number(match[1]);
+  return `🔌 ${connected}`;
+}
+
 function buildSessionNameCandidates(name: string, maxWidth = 18): FooterSessionCandidate[] {
   const clean = sanitizeStatusText(name);
   if (!clean) return [];
@@ -1265,8 +1295,13 @@ export default function (pi: ExtensionAPI) {
 
         const footerSegments: FooterSegment[] = [];
         for (const [idx, entry] of extensionEntries.entries()) {
+          const compactText = entry.key === "subagents"
+            ? formatSubagentFooterText(entry.text)
+            : entry.key === "mcp"
+              ? formatMcpFooterText(entry.text)
+              : null;
           footerSegments.push({
-            text: entry.text,
+            text: compactText ?? entry.text,
             color: { ...currentTheme.directory, fg: extensionTextFg },
             group: idx,
             kind: "extension",
