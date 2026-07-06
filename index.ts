@@ -906,17 +906,27 @@ export function formatMcpFooterText(text: string): string | null {
 }
 
 /**
- * Reformat the pi-tps-meter final/summary status (sparkline + avg + μ + p95) into
- * a compact form that keeps the sparkline and average but drops the verbose stats,
- * e.g. "▁▄▇▅▂▁▇█▅▃▆▇ 42 tps". Returns null for the live gauge form (left as-is)
- * and for non-tps status text.
+ * Reformat the pi-tps-meter status into a constant-width segment that keeps the
+ * chart (live gauge or summary sparkline) but drops the redundant spinner and
+ * the verbose μ/p95 stats. The chart is normalized to a fixed 13-cell width and
+ * the number is left-padded to 3 so the whole segment stays stable as the
+ * extension switches between its live and summary forms. Returns null for
+ * non-tps status text.
  */
 export function formatTpsFooterText(text: string): string | null {
-  // Only the summary form has "· μ … · p95 …"; the live gauge form does not.
-  if (!/·\s*μ.*·\s*p95/.test(text)) return null;
-  const stripped = text.replace(/\s*·\s*μ.*$/, "").trim();
-  return stripped.length > 0 ? stripped : null;
+  // Drop the leading braille spinner — pi-claude-powerline renders its own spinner.
+  const noSpinner = text.replace(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+/, "");
+  const match = noSpinner.match(/^(.+?)\s+(\d+(?:\.\d+)?)\s+tps/);
+  if (!match) return null;
+  const chart = match[1]!.trim();
+  const num = match[2]!;
+  const CHART_WIDTH = 13;
+  const NUM_WIDTH = 3;
+  const paddedChart = chart.padStart(CHART_WIDTH, "▁");
+  const paddedNum = num.padStart(NUM_WIDTH, " ");
+  return `${paddedChart} ${paddedNum} tps`;
 }
+
 function buildSessionNameCandidates(name: string, maxWidth = 18): FooterSessionCandidate[] {
   const clean = sanitizeStatusText(name);
   if (!clean) return [];
@@ -1295,7 +1305,12 @@ export default function (pi: ExtensionAPI) {
       render(width: number): string[] {
         const currentTheme = THEMES[theme];
         const statusEntries = Array.from(footerData.getExtensionStatuses().entries())
-          .sort(([a], [b]) => a.localeCompare(b))
+          .sort(([a], [b]) => {
+            // Keep the tps meter leftmost so its constant-width segment anchors the row.
+            if (a === "tps") return b === "tps" ? 0 : -1;
+            if (b === "tps") return 1;
+            return a.localeCompare(b);
+          })
           .map(([key, value]) => ({ key, text: sanitizeStatusText(value) }))
           .filter((entry) => entry.text.length > 0);
 
