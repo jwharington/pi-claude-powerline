@@ -905,6 +905,18 @@ export function formatMcpFooterText(text: string): string | null {
   return `🔌 ${connected}`;
 }
 
+/**
+ * Reformat the pi-tps-meter final/summary status (sparkline + avg + μ + p95) into
+ * a compact form that keeps the sparkline and average but drops the verbose stats,
+ * e.g. "▁▄▇▅▂▁▇█▅▃▆▇ 42 tps". Returns null for the live gauge form (left as-is)
+ * and for non-tps status text.
+ */
+export function formatTpsFooterText(text: string): string | null {
+  // Only the summary form has "· μ … · p95 …"; the live gauge form does not.
+  if (!/·\s*μ.*·\s*p95/.test(text)) return null;
+  const stripped = text.replace(/\s*·\s*μ.*$/, "").trim();
+  return stripped.length > 0 ? stripped : null;
+}
 function buildSessionNameCandidates(name: string, maxWidth = 18): FooterSessionCandidate[] {
   const clean = sanitizeStatusText(name);
   if (!clean) return [];
@@ -1299,7 +1311,9 @@ export default function (pi: ExtensionAPI) {
             ? formatSubagentFooterText(entry.text)
             : entry.key === "mcp"
               ? formatMcpFooterText(entry.text)
-              : null;
+              : entry.key === "tps"
+                ? formatTpsFooterText(entry.text)
+                : null;
           footerSegments.push({
             text: compactText ?? entry.text,
             color: { ...currentTheme.directory, fg: extensionTextFg },
